@@ -10,7 +10,6 @@ checkRoleAccess(['admin', 'sale']);
 
 $success = '';
 $error = '';
-$add='';
 // ==================== BULK IMPORT FUNCTIONALITY ====================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'bulk_import') {
     // Check if user is admin for write operations
