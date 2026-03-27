@@ -33,17 +33,7 @@ $customer = $customer_result->fetch_assoc();
 $from_date = isset($_GET['from_date']) ? $_GET['from_date'] : date('Y-m-01'); // First day of current month
 $to_date = isset($_GET['to_date']) ? $_GET['to_date'] : date('Y-m-d'); // Today
 
-// Get all invoices for this customer
-$invoices_query = $conn->prepare("
-    SELECT * FROM invoice 
-    WHERE customer_id = ? 
-    ORDER BY created_at ASC
-");
-$invoices_query->bind_param("i", $customer_id);
-$invoices_query->execute();
-$invoices = $invoices_query->get_result();
-
-// Calculate opening balance (total of all transactions before from_date)
+// Get opening balance at the start of period
 $opening_balance_query = "
     SELECT 
         COALESCE(SUM(total), 0) as total_invoiced_before,
@@ -59,6 +49,24 @@ $opening_result = $opening_stmt->get_result();
 $opening_data = $opening_result->fetch_assoc();
 
 $opening_balance = $customer['opening_balance'] + ($opening_data['total_invoiced_before'] - $opening_data['total_paid_before']);
+
+// Get opening balance payments within date range
+$opening_payments_query = $conn->prepare("
+    SELECT * FROM opening_balance_payments 
+    WHERE customer_id = ? AND DATE(payment_date) BETWEEN ? AND ?
+    ORDER BY payment_date ASC
+");
+$opening_payments_query->bind_param("iss", $customer_id, $from_date, $to_date);
+$opening_payments_query->execute();
+$opening_payments_result = $opening_payments_query->get_result();
+
+// Calculate total opening balance payments in period
+$opening_payments_total = 0;
+$opening_payments_list = [];
+while ($payment = $opening_payments_result->fetch_assoc()) {
+    $opening_payments_list[] = $payment;
+    $opening_payments_total += $payment['amount'];
+}
 
 // Calculate summary for the period
 $period_summary_query = "
@@ -77,6 +85,9 @@ $period_stmt->execute();
 $period_result = $period_stmt->get_result();
 $period_data = $period_result->fetch_assoc();
 
+// Update period paid to include opening balance payments
+$period_data['period_paid'] += $opening_payments_total;
+
 // Calculate closing balance
 $closing_balance = $opening_balance + $period_data['period_invoiced'] - $period_data['period_paid'];
 
@@ -92,6 +103,92 @@ $all_invoices_query->bind_param("i", $customer_id);
 $all_invoices_query->execute();
 $all_invoices = $all_invoices_query->get_result();
 
+// Create transactions array for statement
+$transactions = [];
+
+// Add opening balance payment transactions
+foreach ($opening_payments_list as $payment) {
+    $transactions[] = [
+        'date' => $payment['payment_date'],
+        'ref' => $payment['reference_no'] ?: 'OB-PAY',
+        'description' => 'Opening Balance Payment',
+        'debit' => 0,
+        'credit' => $payment['amount'],
+        'type' => 'opening_payment',
+        'method' => $payment['payment_method'],
+        'notes' => $payment['notes']
+    ];
+}
+
+// Get all invoices within date range
+$invoices_query = $conn->prepare("
+    SELECT * FROM invoice 
+    WHERE customer_id = ? 
+    ORDER BY created_at ASC
+");
+$invoices_query->bind_param("i", $customer_id);
+$invoices_query->execute();
+$invoices = $invoices_query->get_result();
+
+$all_invoice_rows = [];
+while ($row = $invoices->fetch_assoc()) {
+    $all_invoice_rows[] = $row;
+}
+
+foreach ($all_invoice_rows as $invoice) {
+    // Skip if outside date range
+    $invoice_date = date('Y-m-d', strtotime($invoice['created_at']));
+    if ($invoice_date < $from_date || $invoice_date > $to_date) {
+        continue;
+    }
+    
+    // Add invoice as debit
+    $transactions[] = [
+        'date' => $invoice['created_at'],
+        'ref' => $invoice['inv_num'],
+        'description' => 'Invoice #' . $invoice['inv_num'],
+        'debit' => $invoice['total'],
+        'credit' => 0,
+        'type' => 'invoice',
+        'method' => null,
+        'notes' => null
+    ];
+    
+    // Add payment as credit if payment exists
+    if ($invoice['cash_received'] > 0) {
+        $payment_desc = 'Payment received - ' . ucfirst($invoice['payment_method']);
+        if ($invoice['cash_received'] < $invoice['total']) {
+            $payment_desc .= ' (Partial)';
+        }
+        
+        $transactions[] = [
+            'date' => $invoice['created_at'],
+            'ref' => $invoice['inv_num'],
+            'description' => $payment_desc,
+            'debit' => 0,
+            'credit' => $invoice['cash_received'],
+            'type' => 'payment',
+            'method' => $invoice['payment_method'],
+            'notes' => null
+        ];
+    }
+}
+
+// Sort transactions by date and type
+usort($transactions, function($a, $b) {
+    $date_a = strtotime($a['date']);
+    $date_b = strtotime($b['date']);
+    
+    if ($date_a == $date_b) {
+        // Order: Opening payments (credit only), Invoices (debit), Regular payments (credit)
+        $order = ['opening_payment' => 1, 'invoice' => 2, 'payment' => 3];
+        $order_a = $order[$a['type']] ?? 4;
+        $order_b = $order[$b['type']] ?? 4;
+        return $order_a - $order_b;
+    }
+    return $date_a - $date_b;
+});
+
 // Format helpers
 function formatCurrency($amount) {
     return '₹' . number_format($amount, 2);
@@ -99,6 +196,10 @@ function formatCurrency($amount) {
 
 function formatDate($date) {
     return date('d M Y', strtotime($date));
+}
+
+function formatDateTime($datetime) {
+    return date('d M Y h:i A', strtotime($datetime));
 }
 
 function getStatusBadge($pending_amount) {
@@ -117,7 +218,6 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
     <?php include 'includes/head.php'; ?>
     <link rel="stylesheet" href="https://cdn.datatables.net/buttons/2.3.6/css/buttons.dataTables.min.css">
     <style>
-        /* Bank Statement Style */
         .statement-header {
             background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
             border-radius: 16px;
@@ -270,6 +370,15 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
             border-top: 2px solid #94a3b8;
         }
         
+        .opening-balance-row {
+            background: #f8fafc;
+            font-weight: 600;
+        }
+        
+        .opening-balance-row td {
+            border-bottom: 2px solid #cbd5e1;
+        }
+        
         .nav-tabs-custom {
             display: flex;
             gap: 10px;
@@ -307,6 +416,10 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
             display: none;
         }
         
+        .opening-payment-row {
+            background: #eef2ff;
+        }
+        
         @media print {
             .no-print {
                 display: none !important;
@@ -322,23 +435,6 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
             }
         }
         
-        .opening-balance-row {
-            background: #f8fafc;
-            font-weight: 600;
-        }
-        
-        .opening-balance-row td {
-            border-bottom: 2px solid #cbd5e1;
-        }
-        
-        /* Table column widths */
-        .statement-table th:nth-child(1) { width: 12%; }
-        .statement-table th:nth-child(2) { width: 15%; }
-        .statement-table th:nth-child(3) { width: 38%; }
-        .statement-table th:nth-child(4) { width: 12%; text-align: right; }
-        .statement-table th:nth-child(5) { width: 12%; text-align: right; }
-        .statement-table th:nth-child(6) { width: 11%; text-align: right; }
-        
         .text-right {
             text-align: right;
         }
@@ -346,6 +442,43 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
         .dashboard-card {
             width: 100%;
             overflow-x: auto;
+        }
+        
+        .back-button {
+            background: white;
+            color: #1e293b;
+            border: 1px solid #e2e8f0;
+            padding: 8px 16px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 14px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .back-button:hover {
+            background: #f8fafc;
+        }
+        
+        .transaction-type-badge {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 12px;
+            margin-left: 8px;
+        }
+        
+        .opening-badge {
+            background: #eef2ff;
+            color: #3b82f6;
+        }
+        
+        .payment-method-badge {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 12px;
+            background: #f1f5f9;
+            color: #475569;
         }
     </style>
 </head>
@@ -459,7 +592,12 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                 <div class="summary-card outflow">
                     <div class="summary-label">Total Paid (Period)</div>
                     <div class="summary-value"><?php echo formatCurrency($period_data['period_paid']); ?></div>
-                    <small class="text-muted"><?php echo $period_data['payment_count']; ?> payments</small>
+                    <small class="text-muted">
+                        <?php echo $period_data['payment_count']; ?> payments
+                        <?php if ($opening_payments_total > 0): ?>
+                            <br><span class="text-primary">(Includes ₹<?php echo number_format($opening_payments_total, 2); ?> opening balance)</span>
+                        <?php endif; ?>
+                    </small>
                 </div>
                 
                 <div class="summary-card balance">
@@ -476,7 +614,7 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                 <div class="table-responsive" style="width: 100%; overflow-x: auto;">
                     <table class="statement-table" id="statementTable" style="width: 100%;">
                         <thead>
-                            <tr>
+                            32
                                 <th>Date</th>
                                 <th>Reference No.</th>
                                 <th>Description</th>
@@ -499,97 +637,52 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                             </tr>
                             
                             <?php 
-                            if ($invoices && $invoices->num_rows > 0):
+                            if (!empty($transactions)):
                                 $running_balance = $opening_balance;
+                                $row_count = 0;
                                 
-                                // Get all invoices
-                                $invoices->data_seek(0);
-                                $all_invoice_rows = [];
-                                while ($row = $invoices->fetch_assoc()) {
-                                    $all_invoice_rows[] = $row;
-                                }
-                                
-                                // Create transaction array
-                                $transactions = [];
-                                
-                                foreach ($all_invoice_rows as $invoice) {
-                                    // Skip if outside date range
-                                    $invoice_date = date('Y-m-d', strtotime($invoice['created_at']));
-                                    if ($invoice_date < $from_date || $invoice_date > $to_date) {
-                                        continue;
-                                    }
-                                    
-                                    // Add invoice as debit
-                                    $transactions[] = [
-                                        'date' => $invoice['created_at'],
-                                        'ref' => $invoice['inv_num'],
-                                        'description' => 'Invoice #' . $invoice['inv_num'],
-                                        'debit' => $invoice['total'],
-                                        'credit' => 0,
-                                        'type' => 'invoice'
-                                    ];
-                                    
-                                    // Add payment as credit if payment exists
-                                    if ($invoice['cash_received'] > 0) {
-                                        $payment_desc = 'Payment received - ' . ucfirst($invoice['payment_method']);
-                                        if ($invoice['cash_received'] < $invoice['total']) {
-                                            $payment_desc .= ' (Partial)';
-                                        }
-                                        
-                                        $transactions[] = [
-                                            'date' => $invoice['created_at'],
-                                            'ref' => $invoice['inv_num'],
-                                            'description' => $payment_desc,
-                                            'debit' => 0,
-                                            'credit' => $invoice['cash_received'],
-                                            'type' => 'payment'
-                                        ];
-                                    }
-                                }
-                                
-                                // Sort transactions by date and type (invoices first, then payments on same day)
-                                usort($transactions, function($a, $b) {
-                                    if ($a['date'] == $b['date']) {
-                                        // Invoices (debits) should come before payments (credits) on same day
-                                        if ($a['debit'] > 0 && $b['credit'] > 0) return -1;
-                                        if ($a['credit'] > 0 && $b['debit'] > 0) return 1;
-                                        return 0;
-                                    }
-                                    return strtotime($a['date']) - strtotime($b['date']);
-                                });
-                                
-                                // Display transactions
                                 foreach ($transactions as $transaction):
                                     if ($transaction['debit'] > 0) {
                                         $running_balance += $transaction['debit'];
+                                        $debit_amount = formatCurrency($transaction['debit']);
+                                        $credit_amount = '-';
+                                        $row_class = '';
                                     } else {
                                         $running_balance -= $transaction['credit'];
+                                        $debit_amount = '-';
+                                        $credit_amount = formatCurrency($transaction['credit']);
+                                        $row_class = ($transaction['type'] == 'opening_payment') ? 'opening-payment-row' : '';
+                                    }
+                                    
+                                    // Add type badge for opening payments
+                                    $description = $transaction['description'];
+                                    if ($transaction['type'] == 'opening_payment') {
+                                        $description .= ' <span class="transaction-type-badge opening-badge"><i class="bi bi-wallet2"></i> Opening Balance</span>';
+                                        if ($transaction['method']) {
+                                            $method_icon = $transaction['method'] == 'cash' ? 'cash' : ($transaction['method'] == 'card' ? 'credit-card' : ($transaction['method'] == 'upi' ? 'phone' : 'bank'));
+                                            $description .= ' <span class="payment-method-badge"><i class="bi bi-' . $method_icon . '"></i> ' . ucfirst($transaction['method']) . '</span>';
+                                        }
+                                        if ($transaction['notes']) {
+                                            $description .= '<br><small class="text-muted">' . htmlspecialchars($transaction['notes']) . '</small>';
+                                        }
                                     }
                             ?>
-                                <tr>
-                                    <td><?php echo formatDate($transaction['date']); ?></td>
+                                <tr class="<?php echo $row_class; ?>">
+                                    <td><?php echo formatDateTime($transaction['date']); ?></td>
                                     <td class="transaction-ref"><?php echo htmlspecialchars($transaction['ref']); ?></td>
-                                    <td class="transaction-desc"><?php echo $transaction['description']; ?></td>
-                                    <td class="transaction-debit text-right">
-                                        <?php echo $transaction['debit'] > 0 ? formatCurrency($transaction['debit']) : '-'; ?>
-                                    </td>
-                                    <td class="transaction-credit text-right">
-                                        <?php echo $transaction['credit'] > 0 ? formatCurrency($transaction['credit']) : '-'; ?>
-                                    </td>
+                                    <td class="transaction-desc"><?php echo $description; ?></td>
+                                    <td class="transaction-debit text-right"><?php echo $debit_amount; ?></td>
+                                    <td class="transaction-credit text-right"><?php echo $credit_amount; ?></td>
                                     <td class="balance-column text-right <?php echo $running_balance >= 0 ? 'balance-positive' : 'balance-negative'; ?>">
                                         <?php echo formatCurrency($running_balance); ?>
                                     </td>
                                 </tr>
                             <?php 
+                                    $row_count++;
                                 endforeach;
                             else:
                             ?>
-                                <tr>
-                                    <td colspan="6" style="text-align: center; padding: 40px; color: #64748b;">
-                                        <i class="bi bi-inbox" style="font-size: 24px; display: block; margin-bottom: 10px;"></i>
-                                        No transactions found for the selected period
-                                    </td>
-                                </tr>
+                               
                             <?php endif; ?>
                             
                             <!-- Closing Balance Row -->
@@ -627,15 +720,24 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                             } else {
                                 $running_balance -= $transaction['credit'];
                             }
+                            $is_opening = ($transaction['type'] == 'opening_payment');
                         ?>
-                            <div class="mobile-card" style="margin-bottom: 10px;">
+                            <div class="mobile-card" style="margin-bottom: 10px; <?php echo $is_opening ? 'background: #eef2ff;' : ''; ?>">
                                 <div class="mobile-card-header">
                                     <span class="transaction-ref"><?php echo htmlspecialchars($transaction['ref']); ?></span>
-                                    <span><?php echo formatDate($transaction['date']); ?></span>
+                                    <span><?php echo formatDateTime($transaction['date']); ?></span>
                                 </div>
                                 
                                 <div class="mobile-card-body">
-                                    <div style="margin-bottom: 8px;"><?php echo $transaction['description']; ?></div>
+                                    <div style="margin-bottom: 8px;">
+                                        <?php echo $transaction['description']; ?>
+                                        <?php if ($is_opening): ?>
+                                            <span class="transaction-type-badge opening-badge"><i class="bi bi-wallet2"></i> Opening Balance</span>
+                                        <?php endif; ?>
+                                        <?php if ($is_opening && $transaction['notes']): ?>
+                                            <br><small class="text-muted"><?php echo htmlspecialchars($transaction['notes']); ?></small>
+                                        <?php endif; ?>
+                                    </div>
                                     
                                     <div class="row g-2">
                                         <div class="col-6">
@@ -691,7 +793,7 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                 <div class="table-responsive" style="width: 100%; overflow-x: auto;">
                     <table class="table-custom" id="invoicesTable" style="width: 100%;">
                         <thead>
-                            <tr>
+                            32
                                 <th>Invoice #</th>
                                 <th>Date</th>
                                 <th>Items</th>
@@ -740,6 +842,13 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                         </td>
                                     </tr>
                                 <?php endwhile; ?>
+                            <?php else: ?>
+                                <tr>
+                                    <td colspan="9" class="text-center py-4">
+                                        <i class="bi bi-receipt d-block mb-2" style="font-size: 48px; color: #cbd5e1;"></i>
+                                        <p class="text-muted mb-0">No invoices found for this customer.</p>
+                                    </td>
+                                </tr>
                             <?php endif; ?>
                         </tbody>
                     </table>
@@ -782,7 +891,6 @@ $(document).ready(function() {
                     columns: [0, 1, 2, 3, 4, 5],
                     format: {
                         body: function(data, row, column, node) {
-                            // Remove ₹ symbol and commas for numeric fields
                             if (column === 3 || column === 4 || column === 5) {
                                 return data.replace(/[₹,]/g, '');
                             }
@@ -800,7 +908,6 @@ $(document).ready(function() {
                     columns: [0, 1, 2, 3, 4, 5],
                     format: {
                         body: function(data, row, column, node) {
-                            // Remove ₹ symbol and commas for numeric fields
                             if (column === 3 || column === 4 || column === 5) {
                                 return data.replace(/[₹,]/g, '');
                             }
@@ -820,7 +927,6 @@ $(document).ready(function() {
                     columns: [0, 1, 2, 3, 4, 5]
                 },
                 customize: function(doc) {
-                    // Add header information to PDF
                     doc.content.splice(0, 0, {
                         text: 'Customer Statement',
                         style: 'header'
@@ -885,7 +991,6 @@ $(document).ready(function() {
                     columns: [0, 1, 2, 3, 4, 5, 6, 7],
                     format: {
                         body: function(data, row, column, node) {
-                            // Remove ₹ symbol and commas for numeric fields
                             if (column === 3 || column === 4 || column === 5) {
                                 return data.replace(/[₹,]/g, '');
                             }
@@ -903,7 +1008,6 @@ $(document).ready(function() {
                     columns: [0, 1, 2, 3, 4, 5, 6, 7],
                     format: {
                         body: function(data, row, column, node) {
-                            // Remove ₹ symbol and commas for numeric fields
                             if (column === 3 || column === 4 || column === 5) {
                                 return data.replace(/[₹,]/g, '');
                             }
@@ -919,18 +1023,6 @@ $(document).ready(function() {
 // Print statement function
 function printStatement() {
     window.print();
-}
-
-// Validate payment amount
-function validatePayment(input, maxAmount) {
-    let value = parseFloat(input.value) || 0;
-    if (value > maxAmount) {
-        input.value = maxAmount;
-        alert('Amount cannot exceed pending amount: ₹' + maxAmount.toFixed(2));
-    }
-    if (value < 0.01) {
-        input.value = 0.01;
-    }
 }
 </script>
 </body>

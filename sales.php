@@ -1,5 +1,5 @@
 <?php
-// sales.php (FULL UPDATED CODE WITH ENHANCED EXPORT FUNCTIONALITY)
+// sales.php (FULL UPDATED CODE WITH ENHANCED FILTERS AND STATS)
 session_start();
 $currentPage = 'sales';
 $pageTitle = 'Sales';
@@ -18,7 +18,7 @@ function buildQueryString($exclude = []) {
     
     // List of all possible filter parameters
     $allFilters = [
-        'filter_date', 'filter_customer', 'filter_payment', 'filter_status',
+        'filter_date_range', 'filter_customer', 'filter_payment', 'filter_status',
         'filter_eway_bill', 'filter_dispatched', 'filter_destination',
         'filter_invoice_no', 'filter_date_from', 'filter_date_to',
         'filter_min_amount', 'filter_max_amount', 'filter_month'
@@ -107,8 +107,6 @@ if (
                 $new_pending = (float)$invoice['pending_amount'] - $payment_amount;
                 if ($new_pending < 0) $new_pending = 0;
 
-                // NOTE: Your schema has cash_received + split fields.
-                // Keeping your original behavior: only pending is updated.
                 $update = $conn->prepare("UPDATE invoice SET pending_amount = ? WHERE id = ?");
                 $update->bind_param("di", $new_pending, $invoice_id);
 
@@ -210,19 +208,21 @@ if (isset($_GET['export']) && in_array($_GET['export'], ['excel', 'csv', 'pdf', 
     $export_type = $_GET['export'];
     
     // Get the same filtered data as the main query
-    $filterDate     = $_GET['filter_date'] ?? date('Y-m-d');
+    $filterDateRange = $_GET['filter_date_range'] ?? '';
     $filterCustomer = $_GET['filter_customer'] ?? '';
     $filterPayment  = $_GET['filter_payment'] ?? '';
     $filterStatus   = $_GET['filter_status'] ?? '';
-    $filterMonth    = $_GET['filter_month'] ?? date('Y-m');
+    $filterMonth    = $_GET['filter_month'] ?? '';
+    
+    // Custom date range
+    $filterDateFrom = $_GET['filter_date_from'] ?? '';
+    $filterDateTo = $_GET['filter_date_to'] ?? '';
     
     // Advanced filters
     $filterEwayBill = $_GET['filter_eway_bill'] ?? '';
     $filterDispatched = $_GET['filter_dispatched'] ?? '';
     $filterDestination = $_GET['filter_destination'] ?? '';
     $filterInvoiceNo = $_GET['filter_invoice_no'] ?? '';
-    $filterDateFrom = $_GET['filter_date_from'] ?? '';
-    $filterDateTo = $_GET['filter_date_to'] ?? '';
     $filterMinAmount = $_GET['filter_min_amount'] ?? '';
     $filterMaxAmount = $_GET['filter_max_amount'] ?? '';
 
@@ -244,12 +244,52 @@ if (isset($_GET['export']) && in_array($_GET['export'], ['excel', 'csv', 'pdf', 
             $types .= "ii";
         }
     } else {
-        // Regular export with all filters
-        // Basic filters
-        if ($filterDate && $filterDate !== 'all') {
-            $where .= " AND DATE(i.created_at) = ?";
-            $params[] = $filterDate;
-            $types .= "s";
+        // Apply date range logic
+        if (!empty($filterDateRange)) {
+            $today = date('Y-m-d');
+            switch ($filterDateRange) {
+                case 'today':
+                    $where .= " AND DATE(i.created_at) = ?";
+                    $params[] = $today;
+                    $types .= "s";
+                    break;
+                case 'yesterday':
+                    $yesterday = date('Y-m-d', strtotime('-1 day'));
+                    $where .= " AND DATE(i.created_at) = ?";
+                    $params[] = $yesterday;
+                    $types .= "s";
+                    break;
+                case 'this_week':
+                    $week_start = date('Y-m-d', strtotime('monday this week'));
+                    $week_end = date('Y-m-d', strtotime('sunday this week'));
+                    $where .= " AND DATE(i.created_at) BETWEEN ? AND ?";
+                    $params[] = $week_start;
+                    $params[] = $week_end;
+                    $types .= "ss";
+                    break;
+                case 'this_month':
+                    $month_start = date('Y-m-01');
+                    $month_end = date('Y-m-t');
+                    $where .= " AND DATE(i.created_at) BETWEEN ? AND ?";
+                    $params[] = $month_start;
+                    $params[] = $month_end;
+                    $types .= "ss";
+                    break;
+                case 'custom':
+                    if (!empty($filterDateFrom) && !empty($filterDateTo)) {
+                        $where .= " AND DATE(i.created_at) BETWEEN ? AND ?";
+                        $params[] = $filterDateFrom;
+                        $params[] = $filterDateTo;
+                        $types .= "ss";
+                    }
+                    break;
+            }
+        } else if (!empty($filterDateFrom) && !empty($filterDateTo)) {
+            // Legacy support for direct date range
+            $where .= " AND DATE(i.created_at) BETWEEN ? AND ?";
+            $params[] = $filterDateFrom;
+            $params[] = $filterDateTo;
+            $types .= "ss";
         }
 
         if ($filterCustomer && $filterCustomer !== 'all') {
@@ -296,18 +336,6 @@ if (isset($_GET['export']) && in_array($_GET['export'], ['excel', 'csv', 'pdf', 
         if (!empty($filterInvoiceNo)) {
             $where .= " AND i.inv_num LIKE ?";
             $params[] = "%$filterInvoiceNo%";
-            $types .= "s";
-        }
-
-        if (!empty($filterDateFrom)) {
-            $where .= " AND DATE(i.created_at) >= ?";
-            $params[] = $filterDateFrom;
-            $types .= "s";
-        }
-
-        if (!empty($filterDateTo)) {
-            $where .= " AND DATE(i.created_at) <= ?";
-            $params[] = $filterDateTo;
             $types .= "s";
         }
 
@@ -466,8 +494,19 @@ if (isset($_GET['export']) && in_array($_GET['export'], ['excel', 'csv', 'pdf', 
             if ($isMonthly) {
                 $filter_info[] = "Month: " . date('F Y', strtotime($filterMonth . '-01'));
             } else {
-                if ($filterDate && $filterDate != 'all') $filter_info[] = "Date: $filterDate";
-                if ($filterDateFrom && $filterDateTo) $filter_info[] = "Date Range: $filterDateFrom to $filterDateTo";
+                if (!empty($filterDateRange)) {
+                    $range_labels = [
+                        'today' => 'Today',
+                        'yesterday' => 'Yesterday',
+                        'this_week' => 'This Week',
+                        'this_month' => 'This Month',
+                        'custom' => 'Custom Range'
+                    ];
+                    $filter_info[] = "Date Range: " . ($range_labels[$filterDateRange] ?? $filterDateRange);
+                    if ($filterDateRange === 'custom' && !empty($filterDateFrom) && !empty($filterDateTo)) {
+                        $filter_info[] = "Custom Dates: $filterDateFrom to $filterDateTo";
+                    }
+                }
                 if ($filterCustomer && $filterCustomer != 'all') $filter_info[] = "Customer ID: $filterCustomer";
                 if ($filterPayment && $filterPayment != 'all') $filter_info[] = "Payment Method: " . ucfirst($filterPayment);
                 if ($filterStatus && $filterStatus != 'all') $filter_info[] = "Status: " . ucfirst($filterStatus);
@@ -585,11 +624,11 @@ if (isset($_GET['export']) && in_array($_GET['export'], ['excel', 'csv', 'pdf', 
                     <?php if ($isMonthly): ?>
                         <div>• Month: <?php echo date('F Y', strtotime($filterMonth . '-01')); ?></div>
                     <?php else: ?>
-                        <?php if ($filterDate && $filterDate != 'all'): ?>
-                            <div>• Date: <?php echo $filterDate; ?></div>
-                        <?php endif; ?>
-                        <?php if ($filterDateFrom && $filterDateTo): ?>
-                            <div>• Date Range: <?php echo $filterDateFrom; ?> to <?php echo $filterDateTo; ?></div>
+                        <?php if (!empty($filterDateRange)): ?>
+                            <div>• Date Range: <?php echo ucfirst(str_replace('_', ' ', $filterDateRange)); ?></div>
+                            <?php if ($filterDateRange === 'custom' && !empty($filterDateFrom) && !empty($filterDateTo)): ?>
+                                <div>• Custom Dates: <?php echo $filterDateFrom; ?> to <?php echo $filterDateTo; ?></div>
+                            <?php endif; ?>
                         <?php endif; ?>
                         <?php if ($filterCustomer && $filterCustomer != 'all'): ?>
                             <div>• Customer ID: <?php echo $filterCustomer; ?></div>
@@ -616,7 +655,7 @@ if (isset($_GET['export']) && in_array($_GET['export'], ['excel', 'csv', 'pdf', 
                             <div>• Invoice No: <?php echo $filterInvoiceNo; ?></div>
                         <?php endif; ?>
                     <?php endif; ?>
-                    <?php if (empty($filter_info) && !$isMonthly): ?>
+                    <?php if (empty($filter_info) && !$isMonthly && empty($filterDateRange) && empty($filterCustomer) && empty($filterPayment) && empty($filterStatus)): ?>
                         <div>• No filters applied - All records</div>
                     <?php endif; ?>
                 </div>
@@ -734,11 +773,10 @@ if (isset($_GET['export']) && in_array($_GET['export'], ['excel', 'csv', 'pdf', 
 // -------------------------
 // Filters - UPDATED with new fields
 // -------------------------
-$filterDate     = $_GET['filter_date'] ?? date('Y-m-d');
+$filterDateRange = $_GET['filter_date_range'] ?? '';
 $filterCustomer = $_GET['filter_customer'] ?? '';
 $filterPayment  = $_GET['filter_payment'] ?? '';
 $filterStatus   = $_GET['filter_status'] ?? '';
-$filterMonth    = $_GET['filter_month'] ?? date('Y-m');
 
 // New advanced filters
 $filterEwayBill = $_GET['filter_eway_bill'] ?? '';
@@ -754,21 +792,52 @@ $where  = "1=1";
 $params = [];
 $types  = "";
 
-// Apply month filter if set (overrides date filter)
-if (!empty($filterMonth) && $filterMonth !== 'all') {
-    $year = substr($filterMonth, 0, 4);
-    $month = substr($filterMonth, 5, 2);
-    $where .= " AND YEAR(i.created_at) = ? AND MONTH(i.created_at) = ?";
-    $params[] = $year;
-    $params[] = $month;
-    $types .= "ii";
-} else {
-    // Basic filters (only if month filter not applied)
-    if ($filterDate && $filterDate !== 'all') {
-        $where .= " AND DATE(i.created_at) = ?";
-        $params[] = $filterDate;
-        $types .= "s";
+// Apply date range filter
+if (!empty($filterDateRange)) {
+    $today = date('Y-m-d');
+    switch ($filterDateRange) {
+        case 'today':
+            $where .= " AND DATE(i.created_at) = ?";
+            $params[] = $today;
+            $types .= "s";
+            break;
+        case 'yesterday':
+            $yesterday = date('Y-m-d', strtotime('-1 day'));
+            $where .= " AND DATE(i.created_at) = ?";
+            $params[] = $yesterday;
+            $types .= "s";
+            break;
+        case 'this_week':
+            $week_start = date('Y-m-d', strtotime('monday this week'));
+            $week_end = date('Y-m-d', strtotime('sunday this week'));
+            $where .= " AND DATE(i.created_at) BETWEEN ? AND ?";
+            $params[] = $week_start;
+            $params[] = $week_end;
+            $types .= "ss";
+            break;
+        case 'this_month':
+            $month_start = date('Y-m-01');
+            $month_end = date('Y-m-t');
+            $where .= " AND DATE(i.created_at) BETWEEN ? AND ?";
+            $params[] = $month_start;
+            $params[] = $month_end;
+            $types .= "ss";
+            break;
+        case 'custom':
+            if (!empty($filterDateFrom) && !empty($filterDateTo)) {
+                $where .= " AND DATE(i.created_at) BETWEEN ? AND ?";
+                $params[] = $filterDateFrom;
+                $params[] = $filterDateTo;
+                $types .= "ss";
+            }
+            break;
     }
+} else if (!empty($filterDateFrom) && !empty($filterDateTo)) {
+    // Legacy support for direct date range
+    $where .= " AND DATE(i.created_at) BETWEEN ? AND ?";
+    $params[] = $filterDateFrom;
+    $params[] = $filterDateTo;
+    $types .= "ss";
 }
 
 if ($filterCustomer && $filterCustomer !== 'all') {
@@ -815,18 +884,6 @@ if (!empty($filterDestination)) {
 if (!empty($filterInvoiceNo)) {
     $where .= " AND i.inv_num LIKE ?";
     $params[] = "%$filterInvoiceNo%";
-    $types .= "s";
-}
-
-if (!empty($filterDateFrom)) {
-    $where .= " AND DATE(i.created_at) >= ?";
-    $params[] = $filterDateFrom;
-    $types .= "s";
-}
-
-if (!empty($filterDateTo)) {
-    $where .= " AND DATE(i.created_at) <= ?";
-    $params[] = $filterDateTo;
     $types .= "s";
 }
 
@@ -878,30 +935,91 @@ if (!empty($params)) {
 // Get customers for filter dropdown
 $customers = $conn->query("SELECT id, customer_name FROM customers ORDER BY customer_name ASC");
 
-// Get available months for filter
-$months_query = $conn->query("
-    SELECT DISTINCT 
-        DATE_FORMAT(created_at, '%Y-%m') as month_value,
-        DATE_FORMAT(created_at, '%M %Y') as month_name
-    FROM invoice 
-    ORDER BY created_at DESC
-");
-$available_months = $months_query->fetch_all(MYSQLI_ASSOC);
-
 // -------------------------
-// Stats (kept same)
+// Stats - UPDATED to respect filters
 // -------------------------
-$today_sales     = $conn->query("SELECT COALESCE(SUM(total), 0) as total FROM invoice WHERE DATE(created_at) = CURDATE()")->fetch_assoc()['total'];
-$month_sales     = $conn->query("SELECT COALESCE(SUM(total), 0) as total FROM invoice WHERE MONTH(created_at) = MONTH(CURDATE()) AND YEAR(created_at) = YEAR(CURDATE())")->fetch_assoc()['total'];
-$total_invoices  = $conn->query("SELECT COUNT(*) as cnt FROM invoice")->fetch_assoc()['cnt'];
-$pending_amount  = $conn->query("SELECT COALESCE(SUM(pending_amount), 0) as total FROM invoice WHERE pending_amount > 0")->fetch_assoc()['total'];
-$today_count     = $conn->query("SELECT COUNT(*) as cnt FROM invoice WHERE DATE(created_at) = CURDATE()")->fetch_assoc()['cnt'];
 
-$cash_count   = $conn->query("SELECT COUNT(*) as cnt FROM invoice WHERE payment_method = 'cash'")->fetch_assoc()['cnt'];
-$card_count   = $conn->query("SELECT COUNT(*) as cnt FROM invoice WHERE payment_method = 'card'")->fetch_assoc()['cnt'];
-$upi_count    = $conn->query("SELECT COUNT(*) as cnt FROM invoice WHERE payment_method = 'upi'")->fetch_assoc()['cnt'];
-$bank_count   = $conn->query("SELECT COUNT(*) as cnt FROM invoice WHERE payment_method = 'bank'")->fetch_assoc()['cnt'];
-$credit_count = $conn->query("SELECT COUNT(*) as cnt FROM invoice WHERE payment_method = 'credit'")->fetch_assoc()['cnt'];
+// Build stats query with same WHERE conditions (excluding pagination)
+$stats_where = $where;
+$stats_params = $params;
+$stats_types = $types;
+
+// Get stats based on filters
+$stats_sql = "
+    SELECT 
+        COALESCE(SUM(i.total), 0) as total_sales,
+        COALESCE(SUM(i.pending_amount), 0) as total_pending,
+        COUNT(i.id) as invoice_count,
+        COALESCE(SUM(pf.profit), 0) as total_profit,
+        SUM(CASE WHEN i.payment_method = 'cash' THEN 1 ELSE 0 END) as cash_count,
+        SUM(CASE WHEN i.payment_method = 'card' THEN 1 ELSE 0 END) as card_count,
+        SUM(CASE WHEN i.payment_method = 'upi' THEN 1 ELSE 0 END) as upi_count,
+        SUM(CASE WHEN i.payment_method = 'bank' THEN 1 ELSE 0 END) as bank_count,
+        SUM(CASE WHEN i.payment_method = 'credit' THEN 1 ELSE 0 END) as credit_count,
+        SUM(CASE WHEN i.payment_method = 'mixed' THEN 1 ELSE 0 END) as mixed_count,
+        SUM(CASE WHEN i.pending_amount = 0 THEN 1 ELSE 0 END) as paid_count,
+        SUM(CASE WHEN i.pending_amount > 0 THEN 1 ELSE 0 END) as pending_count
+    FROM invoice i
+    LEFT JOIN (
+        SELECT 
+            ii.invoice_id,
+            COALESCE(
+                SUM(ii.selling_price * COALESCE(NULLIF(ii.no_of_pcs,0), ii.quantity)) -
+                SUM(ii.purchase_price * COALESCE(NULLIF(ii.no_of_pcs,0), ii.quantity))
+            , 0) AS profit
+        FROM invoice_item ii
+        GROUP BY ii.invoice_id
+    ) pf ON pf.invoice_id = i.id
+    WHERE $stats_where
+";
+
+if (!empty($stats_params)) {
+    $stats_stmt = $conn->prepare($stats_sql);
+    $stats_stmt->bind_param($stats_types, ...$stats_params);
+    $stats_stmt->execute();
+    $stats = $stats_stmt->get_result()->fetch_assoc();
+} else {
+    $stats = $conn->query($stats_sql)->fetch_assoc();
+}
+
+$total_sales = $stats['total_sales'] ?? 0;
+$total_pending = $stats['total_pending'] ?? 0;
+$total_invoices = $stats['invoice_count'] ?? 0;
+$total_profit = $stats['total_profit'] ?? 0;
+$cash_count = $stats['cash_count'] ?? 0;
+$card_count = $stats['card_count'] ?? 0;
+$upi_count = $stats['upi_count'] ?? 0;
+$bank_count = $stats['bank_count'] ?? 0;
+$credit_count = $stats['credit_count'] ?? 0;
+$mixed_count = $stats['mixed_count'] ?? 0;
+$paid_count = $stats['paid_count'] ?? 0;
+$pending_count = $stats['pending_count'] ?? 0;
+
+// Get additional stats for date range display
+$date_range_label = 'All Time';
+if (!empty($filterDateRange)) {
+    switch ($filterDateRange) {
+        case 'today':
+            $date_range_label = 'Today';
+            break;
+        case 'yesterday':
+            $date_range_label = 'Yesterday';
+            break;
+        case 'this_week':
+            $date_range_label = 'This Week';
+            break;
+        case 'this_month':
+            $date_range_label = 'This Month';
+            break;
+        case 'custom':
+            if (!empty($filterDateFrom) && !empty($filterDateTo)) {
+                $date_range_label = date('d M Y', strtotime($filterDateFrom)) . ' - ' . date('d M Y', strtotime($filterDateTo));
+            } else {
+                $date_range_label = 'Custom Range';
+            }
+            break;
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1024,6 +1142,46 @@ $credit_count = $conn->query("SELECT COUNT(*) as cnt FROM invoice WHERE payment_
             padding: 12px;
             border: 1px solid #e2e8f0;
         }
+        .date-range-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        .date-range-btn {
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+            background: #f1f5f9;
+            color: #475569;
+            border: none;
+            transition: all 0.2s;
+            cursor: pointer;
+        }
+        .date-range-btn.active {
+            background: #2463eb;
+            color: white;
+        }
+        .date-range-btn:hover:not(.active) {
+            background: #e2e8f0;
+        }
+        .custom-date-range {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid #e2e8f0;
+        }
+        .filter-stats-badge {
+            background: #e8f2ff;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            color: #2463eb;
+        }
     </style>
 </head>
 <body>
@@ -1093,42 +1251,45 @@ $credit_count = $conn->query("SELECT COUNT(*) as cnt FROM invoice WHERE payment_
                 </div>
             <?php endif; ?>
 
-            <!-- Stats Cards -->
+            <!-- Stats Cards - Updated based on filters -->
             <div class="stats-grid">
                 <div class="stat-box">
                     <div class="d-flex justify-content-between align-items-start">
                         <div>
-                            <div class="stat-value">₹<?php echo number_format((float)$today_sales, 2); ?></div>
-                            <div class="stat-label">Today's Sales</div>
+                            <div class="stat-value">₹<?php echo number_format((float)$total_sales, 2); ?></div>
+                            <div class="stat-label">Total Sales</div>
+                            <?php if (!empty($date_range_label) && $date_range_label != 'All Time'): ?>
+                                <div class="filter-stats-badge mt-1"><?php echo $date_range_label; ?></div>
+                            <?php endif; ?>
                         </div>
                         <div class="stat-icon blue" style="width: 48px; height: 48px;">
-                            <i class="bi bi-calendar-day"></i>
+                            <i class="bi bi-calculator"></i>
                         </div>
                     </div>
-                    <div class="mt-2 text-muted" style="font-size: 12px;"><?php echo (int)$today_count; ?> invoices today</div>
+                    <div class="mt-2 text-muted" style="font-size: 12px;"><?php echo (int)$total_invoices; ?> invoices</div>
                 </div>
 
                 <div class="stat-box">
                     <div class="d-flex justify-content-between align-items-start">
                         <div>
-                            <div class="stat-value">₹<?php echo number_format((float)$month_sales, 2); ?></div>
-                            <div class="stat-label">Monthly Sales</div>
+                            <div class="stat-value text-success">₹<?php echo number_format((float)$total_profit, 2); ?></div>
+                            <div class="stat-label">Total Profit</div>
                         </div>
                         <div class="stat-icon green" style="width: 48px; height: 48px;">
-                            <i class="bi bi-calendar-month"></i>
+                            <i class="bi bi-graph-up"></i>
                         </div>
                     </div>
-                    <div class="mt-2 text-muted" style="font-size: 12px;"><?php echo date('F Y'); ?></div>
+                    <div class="mt-2 text-muted" style="font-size: 12px;">Margin: <?php echo $total_sales > 0 ? number_format(($total_profit / $total_sales) * 100, 1) : 0; ?>%</div>
                 </div>
 
                 <div class="stat-box">
                     <div class="d-flex justify-content-between align-items-start">
                         <div>
-                            <div class="stat-value"><?php echo (int)$total_invoices; ?></div>
-                            <div class="stat-label">Total Invoices</div>
+                            <div class="stat-value"><?php echo (int)$paid_count; ?></div>
+                            <div class="stat-label">Paid Invoices</div>
                         </div>
                         <div class="stat-icon purple" style="width: 48px; height: 48px;">
-                            <i class="bi bi-receipt"></i>
+                            <i class="bi bi-check-circle-fill"></i>
                         </div>
                     </div>
                 </div>
@@ -1136,13 +1297,14 @@ $credit_count = $conn->query("SELECT COUNT(*) as cnt FROM invoice WHERE payment_
                 <div class="stat-box">
                     <div class="d-flex justify-content-between align-items-start">
                         <div>
-                            <div class="stat-value text-danger">₹<?php echo number_format((float)$pending_amount, 2); ?></div>
+                            <div class="stat-value text-danger">₹<?php echo number_format((float)$total_pending, 2); ?></div>
                             <div class="stat-label">Pending Amount</div>
                         </div>
                         <div class="stat-icon orange" style="width: 48px; height: 48px;">
                             <i class="bi bi-clock-history"></i>
                         </div>
                     </div>
+                    <div class="mt-2 text-muted" style="font-size: 12px;"><?php echo (int)$pending_count; ?> invoices pending</div>
                 </div>
             </div>
 
@@ -1173,174 +1335,167 @@ $credit_count = $conn->query("SELECT COUNT(*) as cnt FROM invoice WHERE payment_
                 </div>
             </div>
 
-            <!-- Filter Section -->
+            <!-- Filter Section - UPDATED -->
             <div class="filter-section">
-                <form method="GET" action="sales.php" class="row g-3">
-                    <!-- Month Filter (new) -->
-                    <div class="col-md-3">
-                        <label class="form-label fw-semibold">
-                            <i class="bi bi-calendar-month"></i> Select Month
-                        </label>
-                        <select name="filter_month" class="form-select">
-                            <option value="all">All Months</option>
-                            <?php foreach ($available_months as $month): ?>
-                                <option value="<?php echo $month['month_value']; ?>" 
-                                    <?php echo ($filterMonth == $month['month_value']) ? 'selected' : ''; ?>>
-                                    <?php echo $month['month_name']; ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                        <div class="filter-hint">Select month for monthly view</div>
+                <form method="GET" action="sales.php" id="filterForm">
+                    <!-- Date Range Quick Buttons -->
+                    <div class="date-range-buttons">
+                        <button type="button" class="date-range-btn <?php echo $filterDateRange == 'today' ? 'active' : ''; ?>" data-range="today">Today</button>
+                        <button type="button" class="date-range-btn <?php echo $filterDateRange == 'yesterday' ? 'active' : ''; ?>" data-range="yesterday">Yesterday</button>
+                        <button type="button" class="date-range-btn <?php echo $filterDateRange == 'this_week' ? 'active' : ''; ?>" data-range="this_week">This Week</button>
+                        <button type="button" class="date-range-btn <?php echo $filterDateRange == 'this_month' ? 'active' : ''; ?>" data-range="this_month">This Month</button>
+                        <button type="button" class="date-range-btn <?php echo $filterDateRange == 'custom' ? 'active' : ''; ?>" data-range="custom">Custom Range</button>
+                        <?php if (!empty($filterDateRange) || !empty($filterDateFrom) || !empty($filterDateTo)): ?>
+                            <a href="sales.php" class="date-range-btn" style="background: #fee2e2; color: #dc2626;">Clear All</a>
+                        <?php endif; ?>
+                    </div>
+                    
+                    <!-- Hidden field for date range type -->
+                    <input type="hidden" name="filter_date_range" id="filter_date_range" value="<?php echo htmlspecialchars($filterDateRange); ?>">
+                    
+                    <!-- Custom Date Range (shown when custom is selected) -->
+                    <div class="custom-date-range" id="customDateRange" style="display: <?php echo $filterDateRange == 'custom' ? 'flex' : 'none'; ?>;">
+                        <div class="flex-grow-1">
+                            <label class="form-label">From Date</label>
+                            <input type="date" name="filter_date_from" class="form-control" value="<?php echo htmlspecialchars($filterDateFrom); ?>">
+                        </div>
+                        <div class="flex-grow-1">
+                            <label class="form-label">To Date</label>
+                            <input type="date" name="filter_date_to" class="form-control" value="<?php echo htmlspecialchars($filterDateTo); ?>">
+                        </div>
+                        <div class="d-flex align-items-end">
+                            <button type="submit" class="btn-primary-custom">Apply</button>
+                        </div>
                     </div>
 
-                    <div class="col-md-3">
-                        <label class="form-label">Date</label>
-                        <input type="date" name="filter_date" class="form-control" value="<?php echo htmlspecialchars($filterDate); ?>" <?php echo (!empty($filterMonth) && $filterMonth != 'all') ? 'disabled' : ''; ?>>
-                    </div>
+                    <div class="row g-3 mt-2">
+                        <div class="col-md-3">
+                            <label class="form-label">Customer</label>
+                            <select name="filter_customer" class="form-select">
+                                <option value="all">All Customers</option>
+                                <?php
+                                if ($customers && $customers->num_rows > 0) {
+                                    while ($customer = $customers->fetch_assoc()):
+                                ?>
+                                    <option value="<?php echo (int)$customer['id']; ?>" <?php echo ((string)$filterCustomer === (string)$customer['id']) ? 'selected' : ''; ?>>
+                                        <?php echo htmlspecialchars($customer['customer_name']); ?>
+                                    </option>
+                                <?php
+                                    endwhile;
+                                }
+                                ?>
+                            </select>
+                        </div>
 
-                    <div class="col-md-3">
-                        <label class="form-label">Customer</label>
-                        <select name="filter_customer" class="form-select">
-                            <option value="all">All Customers</option>
-                            <?php
-                            if ($customers && $customers->num_rows > 0) {
-                                while ($customer = $customers->fetch_assoc()):
-                            ?>
-                                <option value="<?php echo (int)$customer['id']; ?>" <?php echo ((string)$filterCustomer === (string)$customer['id']) ? 'selected' : ''; ?>>
-                                    <?php echo htmlspecialchars($customer['customer_name']); ?>
-                                </option>
-                            <?php
-                                endwhile;
-                            }
-                            ?>
-                        </select>
-                    </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Payment Method</label>
+                            <select name="filter_payment" class="form-select">
+                                <option value="all">All</option>
+                                <option value="cash" <?php echo $filterPayment === 'cash' ? 'selected' : ''; ?>>Cash</option>
+                                <option value="card" <?php echo $filterPayment === 'card' ? 'selected' : ''; ?>>Card</option>
+                                <option value="upi"  <?php echo $filterPayment === 'upi'  ? 'selected' : ''; ?>>UPI</option>
+                                <option value="bank" <?php echo $filterPayment === 'bank' ? 'selected' : ''; ?>>Bank</option>
+                                <option value="credit" <?php echo $filterPayment === 'credit' ? 'selected' : ''; ?>>Credit</option>
+                                <option value="mixed" <?php echo $filterPayment === 'mixed' ? 'selected' : ''; ?>>Mixed</option>
+                            </select>
+                        </div>
 
-                    <div class="col-md-3">
-                        <label class="form-label">Payment Method</label>
-                        <select name="filter_payment" class="form-select">
-                            <option value="all">All</option>
-                            <option value="cash" <?php echo $filterPayment === 'cash' ? 'selected' : ''; ?>>Cash</option>
-                            <option value="card" <?php echo $filterPayment === 'card' ? 'selected' : ''; ?>>Card</option>
-                            <option value="upi"  <?php echo $filterPayment === 'upi'  ? 'selected' : ''; ?>>UPI</option>
-                            <option value="bank" <?php echo $filterPayment === 'bank' ? 'selected' : ''; ?>>Bank</option>
-                            <option value="credit" <?php echo $filterPayment === 'credit' ? 'selected' : ''; ?>>Credit</option>
-                            <option value="mixed" <?php echo $filterPayment === 'mixed' ? 'selected' : ''; ?>>Mixed</option>
-                        </select>
-                    </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Status</label>
+                            <select name="filter_status" class="form-select">
+                                <option value="all">All</option>
+                                <option value="paid" <?php echo $filterStatus === 'paid' ? 'selected' : ''; ?>>Paid</option>
+                                <option value="pending" <?php echo $filterStatus === 'pending' ? 'selected' : ''; ?>>Pending</option>
+                                <option value="overdue" <?php echo $filterStatus === 'overdue' ? 'selected' : ''; ?>>Overdue (30+ days)</option>
+                            </select>
+                        </div>
 
-                    <div class="col-md-3">
-                        <label class="form-label">Status</label>
-                        <select name="filter_status" class="form-select">
-                            <option value="all">All</option>
-                            <option value="paid" <?php echo $filterStatus === 'paid' ? 'selected' : ''; ?>>Paid</option>
-                            <option value="pending" <?php echo $filterStatus === 'pending' ? 'selected' : ''; ?>>Pending</option>
-                            <option value="overdue" <?php echo $filterStatus === 'overdue' ? 'selected' : ''; ?>>Overdue (30+ days)</option>
-                        </select>
-                    </div>
-
-                    <div class="col-md-6 d-flex align-items-end">
-                        <div class="d-flex gap-2 w-100">
-                            <button type="submit" class="btn-primary-custom flex-fill">
+                        <div class="col-md-3 d-flex align-items-end">
+                            <button type="submit" class="btn-primary-custom w-100">
                                 <i class="bi bi-funnel"></i> Apply Filters
                             </button>
-                            <a href="sales.php" class="btn-outline-custom flex-fill">
-                                <i class="bi bi-x-circle"></i> Clear
-                            </a>
                         </div>
                     </div>
 
                     <!-- Advanced Filters Toggle -->
-                    <div class="col-12">
-                        <button type="button" class="btn btn-link text-primary p-0" id="toggleAdvancedFilters" style="text-decoration: none;">
-                            <i class="bi bi-chevron-down" id="toggleIcon"></i> Advanced Filters
-                        </button>
+                    <div class="row mt-3">
+                        <div class="col-12">
+                            <button type="button" class="btn btn-link text-primary p-0" id="toggleAdvancedFilters" style="text-decoration: none;">
+                                <i class="bi bi-chevron-down" id="toggleIcon"></i> Advanced Filters
+                            </button>
+                        </div>
                     </div>
 
                     <!-- Advanced Filters Section -->
-                    <div class="col-12" id="advancedFilters" style="display: none;">
-                        <div class="advanced-filters">
-                            <div class="row g-3">
-                                <div class="col-md-3">
-                                    <label class="form-label fw-semibold">
-                                        <i class="bi bi-upc-scan"></i> E-Way Bill No
-                                    </label>
-                                    <input type="text" name="filter_eway_bill" class="form-control" 
-                                           placeholder="Search by E-Way Bill" 
-                                           value="<?php echo htmlspecialchars($filterEwayBill); ?>">
-                                    <div class="filter-hint">Enter E-Way bill number</div>
-                                </div>
+                    <div class="row" id="advancedFilters" style="display: none;">
+                        <div class="col-12">
+                            <div class="advanced-filters">
+                                <div class="row g-3">
+                                    <div class="col-md-3">
+                                        <label class="form-label fw-semibold">
+                                            <i class="bi bi-upc-scan"></i> E-Way Bill No
+                                        </label>
+                                        <input type="text" name="filter_eway_bill" class="form-control" 
+                                               placeholder="Search by E-Way Bill" 
+                                               value="<?php echo htmlspecialchars($filterEwayBill); ?>">
+                                        <div class="filter-hint">Enter E-Way bill number</div>
+                                    </div>
 
-                                <div class="col-md-3">
-                                    <label class="form-label fw-semibold">
-                                        <i class="bi bi-truck"></i> Dispatched Through
-                                    </label>
-                                    <input type="text" name="filter_dispatched" class="form-control" 
-                                           placeholder="Transport / Vehicle" 
-                                           value="<?php echo htmlspecialchars($filterDispatched); ?>">
-                                    <div class="filter-hint">Transport name or vehicle no</div>
-                                </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label fw-semibold">
+                                            <i class="bi bi-truck"></i> Dispatched Through
+                                        </label>
+                                        <input type="text" name="filter_dispatched" class="form-control" 
+                                               placeholder="Transport / Vehicle" 
+                                               value="<?php echo htmlspecialchars($filterDispatched); ?>">
+                                        <div class="filter-hint">Transport name or vehicle no</div>
+                                    </div>
 
-                                <div class="col-md-3">
-                                    <label class="form-label fw-semibold">
-                                        <i class="bi bi-geo-alt"></i> Destination
-                                    </label>
-                                    <input type="text" name="filter_destination" class="form-control" 
-                                           placeholder="Destination" 
-                                           value="<?php echo htmlspecialchars($filterDestination); ?>">
-                                    <div class="filter-hint">Delivery destination</div>
-                                </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label fw-semibold">
+                                            <i class="bi bi-geo-alt"></i> Destination
+                                        </label>
+                                        <input type="text" name="filter_destination" class="form-control" 
+                                               placeholder="Destination" 
+                                               value="<?php echo htmlspecialchars($filterDestination); ?>">
+                                        <div class="filter-hint">Delivery destination</div>
+                                    </div>
 
-                                <div class="col-md-3">
-                                    <label class="form-label fw-semibold">
-                                        <i class="bi bi-hash"></i> Invoice Number
-                                    </label>
-                                    <input type="text" name="filter_invoice_no" class="form-control" 
-                                           placeholder="Invoice #" 
-                                           value="<?php echo htmlspecialchars($filterInvoiceNo); ?>">
-                                </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label fw-semibold">
+                                            <i class="bi bi-hash"></i> Invoice Number
+                                        </label>
+                                        <input type="text" name="filter_invoice_no" class="form-control" 
+                                               placeholder="Invoice #" 
+                                               value="<?php echo htmlspecialchars($filterInvoiceNo); ?>">
+                                    </div>
 
-                                <div class="col-md-3">
-                                    <label class="form-label fw-semibold">
-                                        <i class="bi bi-calendar-range"></i> From Date
-                                    </label>
-                                    <input type="date" name="filter_date_from" class="form-control" 
-                                           value="<?php echo htmlspecialchars($filterDateFrom); ?>">
-                                </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label fw-semibold">
+                                            <i class="bi bi-tag"></i> Min Amount (₹)
+                                        </label>
+                                        <input type="number" name="filter_min_amount" class="form-control" 
+                                               placeholder="Min Amount" step="0.01" 
+                                               value="<?php echo htmlspecialchars($filterMinAmount); ?>">
+                                    </div>
 
-                                <div class="col-md-3">
-                                    <label class="form-label fw-semibold">
-                                        <i class="bi bi-calendar-range"></i> To Date
-                                    </label>
-                                    <input type="date" name="filter_date_to" class="form-control" 
-                                           value="<?php echo htmlspecialchars($filterDateTo); ?>">
-                                </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label fw-semibold">
+                                            <i class="bi bi-tag"></i> Max Amount (₹)
+                                        </label>
+                                        <input type="number" name="filter_max_amount" class="form-control" 
+                                               placeholder="Max Amount" step="0.01" 
+                                               value="<?php echo htmlspecialchars($filterMaxAmount); ?>">
+                                    </div>
 
-                                <div class="col-md-3">
-                                    <label class="form-label fw-semibold">
-                                        <i class="bi bi-tag"></i> Min Amount (₹)
-                                    </label>
-                                    <input type="number" name="filter_min_amount" class="form-control" 
-                                           placeholder="Min Amount" step="0.01" 
-                                           value="<?php echo htmlspecialchars($filterMinAmount); ?>">
-                                </div>
-
-                                <div class="col-md-3">
-                                    <label class="form-label fw-semibold">
-                                        <i class="bi bi-tag"></i> Max Amount (₹)
-                                    </label>
-                                    <input type="number" name="filter_max_amount" class="form-control" 
-                                           placeholder="Max Amount" step="0.01" 
-                                           value="<?php echo htmlspecialchars($filterMaxAmount); ?>">
-                                </div>
-
-                                <div class="col-12 mt-2">
-                                    <button type="submit" class="btn btn-primary">
-                                        <i class="bi bi-search"></i> Apply Advanced Filters
-                                    </button>
-                                    <a href="sales.php" class="btn btn-outline-secondary ms-2">
-                                        <i class="bi bi-eraser"></i> Clear All
-                                    </a>
+                                    <div class="col-12 mt-2">
+                                        <button type="submit" class="btn btn-primary">
+                                            <i class="bi bi-search"></i> Apply Advanced Filters
+                                        </button>
+                                        <a href="sales.php" class="btn btn-outline-secondary ms-2">
+                                            <i class="bi bi-eraser"></i> Clear All
+                                        </a>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -1470,7 +1625,7 @@ $credit_count = $conn->query("SELECT COUNT(*) as cnt FROM invoice WHERE payment_
 
                                                 <?php if ($is_admin): ?>
                                                     <form method="POST"
-                                                          action="sales.php<?php echo buildQueryString(['filter_date', 'filter_customer', 'filter_payment', 'filter_status', 'filter_eway_bill', 'filter_dispatched', 'filter_destination', 'filter_invoice_no', 'filter_date_from', 'filter_date_to', 'filter_min_amount', 'filter_max_amount']); ?>"
+                                                          action="sales.php<?php echo buildQueryString(['filter_date_range', 'filter_customer', 'filter_payment', 'filter_status', 'filter_eway_bill', 'filter_dispatched', 'filter_destination', 'filter_invoice_no', 'filter_date_from', 'filter_date_to', 'filter_min_amount', 'filter_max_amount']); ?>"
                                                           style="display:inline;"
                                                           onsubmit="return confirm('Are you sure you want to cancel this invoice? Stock will be restored.')">
                                                         <input type="hidden" name="action" value="cancel_invoice">
@@ -1485,7 +1640,7 @@ $credit_count = $conn->query("SELECT COUNT(*) as cnt FROM invoice WHERE payment_
                                     </tr>
                                 <?php endwhile; ?>
                             <?php else: ?>
-                                <tr><td colspan="13" class="text-center text-muted py-4">No invoices found.</td></tr>
+                                
                             <?php endif; ?>
                         </tbody>
                     </table>
@@ -1594,7 +1749,7 @@ $credit_count = $conn->query("SELECT COUNT(*) as cnt FROM invoice WHERE payment_
 
                                     <?php if ($is_admin): ?>
                                         <form method="POST"
-                                              action="sales.php<?php echo buildQueryString(['filter_date', 'filter_customer', 'filter_payment', 'filter_status', 'filter_eway_bill', 'filter_dispatched', 'filter_destination', 'filter_invoice_no', 'filter_date_from', 'filter_date_to', 'filter_min_amount', 'filter_max_amount']); ?>"
+                                              action="sales.php<?php echo buildQueryString(['filter_date_range', 'filter_customer', 'filter_payment', 'filter_status', 'filter_eway_bill', 'filter_dispatched', 'filter_destination', 'filter_invoice_no', 'filter_date_from', 'filter_date_to', 'filter_min_amount', 'filter_max_amount']); ?>"
                                               style="flex: 1;"
                                               onsubmit="return confirm('Cancel this invoice? Stock will be restored.')">
                                             <input type="hidden" name="action" value="cancel_invoice">
@@ -1612,7 +1767,7 @@ $credit_count = $conn->query("SELECT COUNT(*) as cnt FROM invoice WHERE payment_
                             <i class="bi bi-receipt d-block mb-2" style="font-size: 48px;"></i>
                             <div style="font-size: 15px; font-weight: 500; margin-bottom: 4px;">No invoices found</div>
                             <div style="font-size: 13px;">
-                                <?php if ($filterDate || $filterCustomer || $filterPayment || $filterStatus || $filterEwayBill || $filterDispatched || $filterDestination): ?>
+                                <?php if (!empty($filterDateRange) || !empty($filterCustomer) || !empty($filterPayment) || !empty($filterStatus) || !empty($filterEwayBill) || !empty($filterDispatched) || !empty($filterDestination)): ?>
                                     Try changing your filters or <a href="sales.php">view all invoices</a>
                                 <?php else: ?>
                                     <a href="new-sale.php">Create your first invoice</a> to get started
@@ -1634,7 +1789,7 @@ $credit_count = $conn->query("SELECT COUNT(*) as cnt FROM invoice WHERE payment_
 <div class="modal fade" id="paymentModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
-            <form method="POST" action="sales.php<?php echo buildQueryString(['filter_date', 'filter_customer', 'filter_payment', 'filter_status', 'filter_eway_bill', 'filter_dispatched', 'filter_destination', 'filter_invoice_no', 'filter_date_from', 'filter_date_to', 'filter_min_amount', 'filter_max_amount']); ?>" id="paymentForm">
+            <form method="POST" action="sales.php<?php echo buildQueryString(['filter_date_range', 'filter_customer', 'filter_payment', 'filter_status', 'filter_eway_bill', 'filter_dispatched', 'filter_destination', 'filter_invoice_no', 'filter_date_from', 'filter_date_to', 'filter_min_amount', 'filter_max_amount']); ?>" id="paymentForm">
                 <input type="hidden" name="action" value="collect_payment">
                 <input type="hidden" name="invoice_id" id="paymentInvoiceId">
 
@@ -1718,8 +1873,7 @@ $(document).ready(function() {
     // Show advanced filters by default if any advanced filter has value
     const urlParams = new URLSearchParams(window.location.search);
     const advancedFilters = ['filter_eway_bill', 'filter_dispatched', 'filter_destination', 
-                            'filter_invoice_no', 'filter_date_from', 'filter_date_to',
-                            'filter_min_amount', 'filter_max_amount'];
+                            'filter_invoice_no', 'filter_min_amount', 'filter_max_amount'];
     
     let showAdvanced = false;
     advancedFilters.forEach(filter => {
@@ -1732,21 +1886,37 @@ $(document).ready(function() {
         $('#advancedFilters').show();
         $('#toggleIcon').removeClass('bi-chevron-down').addClass('bi-chevron-up');
     }
-
-    // Handle month filter disabling date filter
-    $('select[name="filter_month"]').change(function() {
-        const monthVal = $(this).val();
-        if (monthVal !== 'all') {
-            $('input[name="filter_date"]').prop('disabled', true).val('');
+    
+    // Date range button click handlers
+    $('.date-range-btn').click(function() {
+        const range = $(this).data('range');
+        if (range) {
+            $('#filter_date_range').val(range);
+            if (range === 'custom') {
+                $('#customDateRange').show();
+            } else {
+                $('#customDateRange').hide();
+                // Submit the form when a quick date range is selected
+                $('#filterForm').submit();
+            }
         } else {
-            $('input[name="filter_date"]').prop('disabled', false);
+            // Clear button handling - already has href
+            return;
         }
     });
-
-    // Initial check
-    if ($('select[name="filter_month"]').val() !== 'all') {
-        $('input[name="filter_date"]').prop('disabled', true);
+    
+    // Handle custom range - don't auto submit, let user click Apply
+    // But if custom range is already selected and no dates are set, show the date inputs
+    if ($('#filter_date_range').val() === 'custom') {
+        $('#customDateRange').show();
     }
+    
+    // Handle form submission for custom range
+    $('#customDateRange button[type="submit"]').click(function(e) {
+        e.preventDefault();
+        $('#filter_date_range').val('custom');
+        $('#filterForm').submit();
+    });
 });
 
 // Show payment modal

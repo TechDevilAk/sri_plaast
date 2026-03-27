@@ -32,6 +32,70 @@ $customer = $customer_result->fetch_assoc();
 $success = '';
 $error = '';
 
+// ==================== HANDLE OPENING BALANCE PAYMENT ====================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'collect_opening_balance') {
+    // Check if user is admin for payment operations
+    if ($_SESSION['user_role'] !== 'admin') {
+        $error = 'You do not have permission to collect payments.';
+    } else {
+        $opening_balance = floatval($customer['opening_balance']);
+        $paid_amount = floatval($_POST['paid_amount']);
+        $payment_method = $_POST['payment_method'] ?? 'cash';
+        $reference_no = trim($_POST['reference_no'] ?? '');
+        $notes = trim($_POST['notes'] ?? '');
+        
+        if ($opening_balance > 0) {
+            if ($paid_amount > 0 && $paid_amount <= $opening_balance) {
+                // Start transaction
+                $conn->begin_transaction();
+                
+                try {
+                    $new_opening_balance = $opening_balance - $paid_amount;
+                    
+                    // Update customer opening balance
+                    $update = $conn->prepare("UPDATE customers SET opening_balance = ? WHERE id = ?");
+                    $update->bind_param("di", $new_opening_balance, $customer_id);
+                    $update->execute();
+                    
+                    // Save opening balance payment record
+                    $insert_payment = $conn->prepare("
+                        INSERT INTO opening_balance_payments 
+                        (customer_id, payment_date, amount, payment_method, reference_no, notes, created_by) 
+                        VALUES (?, NOW(), ?, ?, ?, ?, ?)
+                    ");
+                    $insert_payment->bind_param("idsssi", $customer_id, $paid_amount, $payment_method, $reference_no, $notes, $_SESSION['user_id']);
+                    $insert_payment->execute();
+                    
+                    // Log activity
+                    $log_desc = "Opening balance payment collected of ₹" . number_format($paid_amount, 2) . " from customer: " . $customer['customer_name'] . " via " . strtoupper($payment_method);
+                    $log_query = "INSERT INTO activity_log (user_id, action, description) VALUES (?, 'payment', ?)";
+                    $log_stmt = $conn->prepare($log_query);
+                    $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
+                    $log_stmt->execute();
+                    
+                    $conn->commit();
+                    $success = "Opening balance payment of ₹" . number_format($paid_amount, 2) . " collected successfully. Remaining opening balance: ₹" . number_format($new_opening_balance, 2);
+                    
+                    // Refresh customer data
+                    $customer_query = $conn->prepare("SELECT * FROM customers WHERE id = ?");
+                    $customer_query->bind_param("i", $customer_id);
+                    $customer_query->execute();
+                    $customer_result = $customer_query->get_result();
+                    $customer = $customer_result->fetch_assoc();
+                    
+                } catch (Exception $e) {
+                    $conn->rollback();
+                    $error = "Failed to collect opening balance payment: " . $e->getMessage();
+                }
+            } else {
+                $error = "Invalid payment amount. Maximum allowed: ₹" . number_format($opening_balance, 2);
+            }
+        } else {
+            $error = "No opening balance pending for this customer.";
+        }
+    }
+}
+
 // Handle single invoice payment collection
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'collect_payment') {
     // Check if user is admin for payment operations
@@ -86,27 +150,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 }
 
-// Handle overall pending payment collection
+// Handle overall pending payment collection (including opening balance)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'collect_overall_pending') {
     // Check if user is admin for payment operations
     if ($_SESSION['user_role'] !== 'admin') {
         $error = 'You do not have permission to collect payments.';
     } else {
         $payment_method = $_POST['payment_method'] ?? 'cash';
+        $reference_no = trim($_POST['reference_no'] ?? '');
+        $notes = trim($_POST['notes'] ?? '');
         
-        // Get all pending invoices for this customer
-        $pending_query = $conn->prepare("SELECT id, inv_num, total, cash_received, pending_amount FROM invoice WHERE customer_id = ? AND pending_amount > 0");
-        $pending_query->bind_param("i", $customer_id);
-        $pending_query->execute();
-        $pending_result = $pending_query->get_result();
+        // Start transaction
+        $conn->begin_transaction();
         
-        if ($pending_result->num_rows > 0) {
-            // Start transaction
-            $conn->begin_transaction();
+        try {
+            $total_collected = 0;
+            $collected_items = [];
             
-            try {
-                $total_collected = 0;
+            // 1. Handle opening balance collection
+            $opening_balance = floatval($customer['opening_balance']);
+            if ($opening_balance > 0) {
+                $new_opening_balance = 0;
+                $update_opening = $conn->prepare("UPDATE customers SET opening_balance = ? WHERE id = ?");
+                $update_opening->bind_param("di", $new_opening_balance, $customer_id);
+                $update_opening->execute();
                 
+                // Save opening balance payment record
+                $insert_payment = $conn->prepare("
+                    INSERT INTO opening_balance_payments 
+                    (customer_id, payment_date, amount, payment_method, reference_no, notes, created_by) 
+                    VALUES (?, NOW(), ?, ?, ?, ?, ?)
+                ");
+                $insert_payment->bind_param("idsssi", $customer_id, $opening_balance, $payment_method, $reference_no, $notes, $_SESSION['user_id']);
+                $insert_payment->execute();
+                
+                $total_collected += $opening_balance;
+                $collected_items[] = "Opening Balance: ₹" . number_format($opening_balance, 2);
+                
+                // Log opening balance payment
+                $log_desc = "Opening balance payment collected of ₹" . number_format($opening_balance, 2) . " from customer: " . $customer['customer_name'] . " via " . strtoupper($payment_method);
+                $log_query = "INSERT INTO activity_log (user_id, action, description) VALUES (?, 'payment', ?)";
+                $log_stmt = $conn->prepare($log_query);
+                $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
+                $log_stmt->execute();
+            }
+            
+            // 2. Get all pending invoices for this customer
+            $pending_query = $conn->prepare("SELECT id, inv_num, total, cash_received, pending_amount FROM invoice WHERE customer_id = ? AND pending_amount > 0");
+            $pending_query->bind_param("i", $customer_id);
+            $pending_query->execute();
+            $pending_result = $pending_query->get_result();
+            
+            if ($pending_result->num_rows > 0) {
                 while ($invoice = $pending_result->fetch_assoc()) {
                     $new_paid = $invoice['total'];
                     $new_pending = 0;
@@ -117,6 +212,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     $update->execute();
                     
                     $total_collected += $invoice['pending_amount'];
+                    $collected_items[] = "Invoice #" . $invoice['inv_num'] . ": ₹" . number_format($invoice['pending_amount'], 2);
                     
                     // Log individual payment
                     $log_desc = "Payment collected of ₹" . number_format($invoice['pending_amount'], 2) . " for invoice #" . $invoice['inv_num'] . " from customer: " . $customer['customer_name'];
@@ -125,15 +221,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
                     $log_stmt->execute();
                 }
-                
-                $conn->commit();
-                $success = "Overall pending payment of ₹" . number_format($total_collected, 2) . " collected successfully.";
-            } catch (Exception $e) {
-                $conn->rollback();
-                $error = "Failed to collect overall payment: " . $e->getMessage();
             }
-        } else {
-            $error = "No pending invoices found for this customer.";
+            
+            if ($total_collected > 0) {
+                $conn->commit();
+                $success = "Overall payment of ₹" . number_format($total_collected, 2) . " collected successfully.<br>";
+                $success .= "Collected items:<br>";
+                foreach ($collected_items as $item) {
+                    $success .= "• " . $item . "<br>";
+                }
+                
+                // Refresh customer data
+                $customer_query = $conn->prepare("SELECT * FROM customers WHERE id = ?");
+                $customer_query->bind_param("i", $customer_id);
+                $customer_query->execute();
+                $customer_result = $customer_query->get_result();
+                $customer = $customer_result->fetch_assoc();
+            } else {
+                $conn->rollback();
+                $error = "No pending payments found for this customer.";
+            }
+            
+        } catch (Exception $e) {
+            $conn->rollback();
+            $error = "Failed to collect overall payment: " . $e->getMessage();
         }
     }
 }
@@ -212,10 +323,21 @@ $invoices_query->bind_param("i", $customer_id);
 $invoices_query->execute();
 $invoices = $invoices_query->get_result();
 
+// Get opening balance payments for this customer
+$opening_payments_query = $conn->prepare("
+    SELECT * FROM opening_balance_payments 
+    WHERE customer_id = ? 
+    ORDER BY payment_date DESC
+");
+$opening_payments_query->bind_param("i", $customer_id);
+$opening_payments_query->execute();
+$opening_payments_result = $opening_payments_query->get_result();
+
 // Calculate totals
 $total_billed = 0;
 $total_paid = 0;
 $total_pending = 0;
+$total_opening_paid = 0;
 
 $invoices_data = [];
 while ($inv = $invoices->fetch_assoc()) {
@@ -224,6 +346,17 @@ while ($inv = $invoices->fetch_assoc()) {
     $total_paid += $inv['cash_received'];
     $total_pending += $inv['pending_amount'];
 }
+
+// Calculate total opening balance payments
+$opening_payments_list = [];
+while ($payment = $opening_payments_result->fetch_assoc()) {
+    $opening_payments_list[] = $payment;
+    $total_opening_paid += $payment['amount'];
+}
+
+// Get current opening balance
+$opening_balance = floatval($customer['opening_balance']);
+$grand_total_pending = $total_pending + $opening_balance;
 
 // Format helpers
 function formatCurrency($amount) {
@@ -406,6 +539,32 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
             color: #b45309;
         }
         
+        .opening-balance-card {
+            background: #eef2ff;
+            border: 1px solid #c7d2fe;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        
+        .opening-balance-info {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .opening-balance-amount {
+            font-size: 24px;
+            font-weight: 700;
+            color: #7c3aed;
+        }
+        
         .payment-method-selector {
             display: flex;
             gap: 10px;
@@ -458,19 +617,6 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
             align-items: center;
             gap: 8px;
         }
-         .back-button2 {
-            background:blue;
-            color: white;
-            border: 1px solid #e2e8f0;
-            padding: 8px 16px;
-            border-radius: 8px;
-            text-decoration: none;
-            font-size: 14px;
-            margin-right: 300px;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-        }
         
         .back-button:hover {
             background: #f8fafc;
@@ -484,7 +630,6 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
             color: #64748b;
         }
         
-        /* Collect Payment Button */
         .collect-payment-btn {
             background: #10b981;
             color: white;
@@ -495,37 +640,57 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
             background: #059669;
             color: white;
         }
+        
+        .collect-opening-btn {
+            background: #8b5cf6;
+            color: white;
+            border: none;
+        }
+        
+        .collect-opening-btn:hover {
+            background: #7c3aed;
+            color: white;
+        }
+        
         .nav-tabs-custom {
-    display: flex;
-    gap: 10px;
-    border-bottom: 1px solid #e2e8f0;
-    padding-bottom: 10px;
-}
+            display: flex;
+            gap: 10px;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 10px;
+        }
 
-.nav-tab-custom {
-    padding: 8px 20px;
-    border-radius: 20px;
-    font-size: 14px;
-    font-weight: 500;
-    cursor: pointer;
-    text-decoration: none;
-    color: #64748b;
-    transition: all 0.2s;
-}
+        .nav-tab-custom {
+            padding: 8px 20px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+            color: #64748b;
+            transition: all 0.2s;
+        }
 
-.nav-tab-custom:hover {
-    background: #f1f5f9;
-    color: #1e293b;
-}
+        .nav-tab-custom:hover {
+            background: #f1f5f9;
+            color: #1e293b;
+        }
 
-.nav-tab-custom.active {
-    background: #3b82f6;
-    color: white;
-}
+        .nav-tab-custom.active {
+            background: #3b82f6;
+            color: white;
+        }
 
-.nav-tab-custom i {
-    margin-right: 8px;
-}
+        .nav-tab-custom i {
+            margin-right: 8px;
+        }
+        
+        .opening-payment-table {
+            margin-top: 20px;
+        }
+        
+        .opening-payment-row {
+            background: #eef2ff;
+        }
     </style>
 </head>
 <body>
@@ -539,36 +704,36 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
         <div class="page-content">
 
             <!-- Page Header with Back Button and Navigation Tabs -->
-<div class="d-flex align-items-center justify-content-between flex-wrap gap-3 mb-4">
-    <div class="d-flex align-items-center gap-3">
-        <a href="customers.php" class="back-button">
-            <i class="bi bi-arrow-left"></i> Back to Customers
-        </a>
-        <div>
-            <h4 class="fw-bold mb-1" style="color: var(--text-primary);">Payment History</h4>
-            <p style="font-size: 14px; color: var(--text-muted); margin: 0;">View and manage customer payments</p>
-        </div>
-    </div>
-    
-    <!-- Navigation Tabs -->
-    <div class="nav-tabs-custom">
-        <a href="customer_payment_history.php?customer_id=<?php echo $customer_id; ?>" class="nav-tab-custom active">
-            <i class="bi bi-list-ul"></i> Payment History
-        </a>
-        <a href="customer_pay_history.php?customer_id=<?php echo $customer_id; ?>" class="nav-tab-custom">
-            <i class="bi bi-bank"></i> payment Statement
-        </a>
-    </div>
-    
-    <?php if (!$is_admin): ?>
-        <span class="permission-badge"><i class="bi bi-eye"></i> View Only Mode</span>
-    <?php endif; ?>
-</div>
+            <div class="d-flex align-items-center justify-content-between flex-wrap gap-3 mb-4">
+                <div class="d-flex align-items-center gap-3">
+                    <a href="customers.php" class="back-button">
+                        <i class="bi bi-arrow-left"></i> Back to Customers
+                    </a>
+                    <div>
+                        <h4 class="fw-bold mb-1" style="color: var(--text-primary);">Payment History</h4>
+                        <p style="font-size: 14px; color: var(--text-muted); margin: 0;">View and manage customer payments</p>
+                    </div>
+                </div>
+                
+                <!-- Navigation Tabs -->
+                <div class="nav-tabs-custom">
+                    <a href="customer_payment_history.php?customer_id=<?php echo $customer_id; ?>" class="nav-tab-custom active">
+                        <i class="bi bi-list-ul"></i> Payment History
+                    </a>
+                    <a href="customer_pay_history.php?customer_id=<?php echo $customer_id; ?>" class="nav-tab-custom">
+                        <i class="bi bi-bank"></i> Payment Statement
+                    </a>
+                </div>
+                
+                <?php if (!$is_admin): ?>
+                    <span class="permission-badge"><i class="bi bi-eye"></i> View Only Mode</span>
+                <?php endif; ?>
+            </div>
 
             <?php if ($success): ?>
                 <div class="alert alert-success alert-dismissible fade show d-flex align-items-center gap-2" role="alert" data-testid="alert-success">
                     <i class="bi bi-check-circle-fill"></i>
-                    <?php echo htmlspecialchars($success); ?>
+                    <?php echo $success; ?>
                     <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
                 </div>
             <?php endif; ?>
@@ -602,11 +767,6 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                             <?php endif; ?>
                         </div>
                     </div>
-                    
-                    <div style="background: rgba(255,255,255,0.1); padding: 12px 20px; border-radius: 12px; text-align: center;">
-                        <div style="font-size: 12px; opacity: 0.8;">Opening Balance</div>
-                        <div style="font-size: 20px; font-weight: 600;"><?php echo formatCurrency($customer['opening_balance']); ?></div>
-                    </div>
                 </div>
             </div>
 
@@ -628,7 +788,7 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                     <div class="d-flex justify-content-between align-items-start">
                         <div>
                             <div class="stat-value-large"><?php echo formatCurrency($total_paid); ?></div>
-                            <div class="stat-label">Total Paid</div>
+                            <div class="stat-label">Total Paid (Invoices)</div>
                         </div>
                         <div class="stat-icon green" style="width: 48px; height: 48px;">
                             <i class="bi bi-cash"></i>
@@ -640,7 +800,7 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                     <div class="d-flex justify-content-between align-items-start">
                         <div>
                             <div class="stat-value-large" style="color: #dc2626;"><?php echo formatCurrency($total_pending); ?></div>
-                            <div class="stat-label">Total Pending</div>
+                            <div class="stat-label">Pending (Invoices)</div>
                         </div>
                         <div class="stat-icon orange" style="width: 48px; height: 48px;">
                             <i class="bi bi-clock-history"></i>
@@ -661,8 +821,35 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                 </div>
             </div>
 
-            <!-- Overall Pending Section -->
-            <?php if ($total_pending > 0 && $is_admin): ?>
+            <!-- Opening Balance Section -->
+            <?php if ($opening_balance > 0): ?>
+                <div class="opening-balance-card">
+                    <div class="opening-balance-info">
+                        <div>
+                            <div style="font-size: 14px; color: #6b21a5; margin-bottom: 5px;">
+                                <i class="bi bi-wallet2 me-1"></i>
+                                Opening Balance (Previous Dues)
+                            </div>
+                            <div class="opening-balance-amount"><?php echo formatCurrency($opening_balance); ?></div>
+                            <?php if ($total_opening_paid > 0): ?>
+                                <div style="font-size: 11px; color: #6b21a5; margin-top: 5px;">
+                                    <i class="bi bi-check-circle"></i> Previously paid: <?php echo formatCurrency($total_opening_paid); ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                        
+                        <?php if ($is_admin): ?>
+                            <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#openingBalanceModal">
+                                <i class="bi bi-cash me-2"></i>
+                                Collect Opening Balance
+                            </button>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            <?php endif; ?>
+
+            <!-- Overall Pending Section (includes both invoices and opening balance) -->
+            <?php if ($grand_total_pending > 0 && $is_admin): ?>
                 <div class="overall-pending-card">
                     <div class="overall-pending-info">
                         <div>
@@ -670,7 +857,20 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                 <i class="bi bi-exclamation-triangle-fill me-1"></i>
                                 Overall Pending Amount
                             </div>
-                            <div class="overall-pending-amount"><?php echo formatCurrency($total_pending); ?></div>
+                            <div class="overall-pending-amount"><?php echo formatCurrency($grand_total_pending); ?></div>
+                            <?php if ($opening_balance > 0 && $total_pending > 0): ?>
+                                <div style="font-size: 11px; color: #b45309; margin-top: 5px;">
+                                    (Opening: <?php echo formatCurrency($opening_balance); ?> + Invoices: <?php echo formatCurrency($total_pending); ?>)
+                                </div>
+                            <?php elseif ($opening_balance > 0): ?>
+                                <div style="font-size: 11px; color: #b45309; margin-top: 5px;">
+                                    (Opening Balance Only)
+                                </div>
+                            <?php elseif ($total_pending > 0): ?>
+                                <div style="font-size: 11px; color: #b45309; margin-top: 5px;">
+                                    (Invoice Pending Only)
+                                </div>
+                            <?php endif; ?>
                         </div>
                         
                         <button class="btn btn-warning" data-bs-toggle="modal" data-bs-target="#overallPaymentModal">
@@ -681,12 +881,68 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                 </div>
             <?php endif; ?>
 
+            <!-- Opening Balance Payment History -->
+            <?php if (!empty($opening_payments_list)): ?>
+            <div class="dashboard-card mt-4">
+                <div class="card-header py-3" style="background: white; border-bottom: 1px solid #eef2f6;">
+                    <h5 class="mb-0 fw-semibold" style="font-size: 16px;">
+                        <i class="bi bi-wallet2 me-2" style="color: #8b5cf6;"></i>
+                        Opening Balance Payment History
+                    </h5>
+                </div>
+                <div class="table-responsive">
+                    <table class="table-custom" id="openingPaymentsTable">
+                        <thead>
+                            32
+                                <th>Date & Time</th>
+                                <th>Amount</th>
+                                <th>Payment Method</th>
+                                <th>Reference No.</th>
+                                <th>Notes</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($opening_payments_list as $payment): ?>
+                                <tr>
+                                    <td><?php echo date('d M Y h:i A', strtotime($payment['payment_date'])); ?></td>
+                                    <td class="fw-semibold" style="color: #10b981;"><?php echo formatCurrency($payment['amount']); ?></td>
+                                    <td>
+                                        <span class="badge bg-light text-dark">
+                                            <i class="bi bi-<?php 
+                                                echo $payment['payment_method'] == 'cash' ? 'cash' : 
+                                                    ($payment['payment_method'] == 'card' ? 'credit-card' : 
+                                                    ($payment['payment_method'] == 'upi' ? 'phone' : 'bank')); 
+                                            ?> me-1"></i>
+                                            <?php echo ucfirst($payment['payment_method']); ?>
+                                        </span>
+                                    </td>
+                                    <td><?php echo htmlspecialchars($payment['reference_no'] ?: '-'); ?></td>
+                                    <td><?php echo htmlspecialchars($payment['notes'] ?: '-'); ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                            <tr class="fw-bold" style="background: #f8fafc;">
+                                <td><strong>Total Opening Balance Payments</strong></td>
+                                <td style="color: #10b981;"><?php echo formatCurrency($total_opening_paid); ?></td>
+                                <td colspan="3"></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <?php endif; ?>
+
             <!-- Invoices Table -->
-            <div class="dashboard-card" data-testid="invoices-table">
+            <div class="dashboard-card mt-4" data-testid="invoices-table">
+                <div class="card-header py-3" style="background: white; border-bottom: 1px solid #eef2f6;">
+                    <h5 class="mb-0 fw-semibold" style="font-size: 16px;">
+                        <i class="bi bi-receipt me-2" style="color: #3b82f6;"></i>
+                        Invoice Payment History
+                    </h5>
+                </div>
                 <div class="desktop-table" style="overflow-x: auto;">
                     <table class="table-custom" id="paymentHistoryTable">
                         <thead>
-                            <tr>
+                            32
                                 <th>#</th>
                                 <th>Invoice Details</th>
                                 <th>Items</th>
@@ -745,17 +1001,14 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                         <?php if ($is_admin): ?>
                                             <td>
                                                 <div class="d-flex align-items-center justify-content-center gap-1">
-                                                    <!-- View Invoice -->
                                                     <a href="view_invoice.php?id=<?php echo $invoice['id']; ?>" class="btn btn-sm btn-outline-info" style="font-size: 12px; padding: 3px 8px;" title="View Invoice">
                                                         <i class="bi bi-eye"></i>
                                                     </a>
                                                     
-                                                    <!-- Print Invoice -->
                                                     <a href="print_invoice.php?id=<?php echo $invoice['id']; ?>" target="_blank" class="btn btn-sm btn-outline-secondary" style="font-size: 12px; padding: 3px 8px;" title="Print Invoice">
                                                         <i class="bi bi-printer"></i>
                                                     </a>
                                                     
-                                                    <!-- Collect Payment (if pending) -->
                                                     <?php if ($invoice['pending_amount'] > 0): ?>
                                                         <button class="btn btn-sm collect-payment-btn" style="font-size: 12px; padding: 3px 8px;" 
                                                                 data-bs-toggle="modal" data-bs-target="#paymentModal<?php echo $invoice['id']; ?>" 
@@ -764,7 +1017,6 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                                         </button>
                                                     <?php endif; ?>
                                                     
-                                                    <!-- Delete Invoice -->
                                                     <form method="POST" action="customer_payment_history.php?customer_id=<?php echo $customer_id; ?>" 
                                                           style="display: inline;" 
                                                           onsubmit="return confirm('Are you sure you want to delete this invoice? This will reverse the stock and cannot be undone.')">
@@ -875,97 +1127,11 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                         </div>
                                     <?php endif; ?>
                                 <?php endforeach; ?>
+                            <?php else: ?>
+                                
                             <?php endif; ?>
                         </tbody>
                     </table>
-                </div>
-
-                <!-- Mobile Card View -->
-                <div class="mobile-cards" style="padding: 12px;">
-                    <?php if (!empty($invoices_data)): ?>
-                        <?php foreach ($invoices_data as $invoice): ?>
-                            <div class="mobile-card">
-                                <div class="mobile-card-header">
-                                    <div class="d-flex align-items-center gap-2">
-                                        <div class="invoice-avatar small">INV</div>
-                                        <div>
-                                            <div class="fw-semibold"><?php echo htmlspecialchars($invoice['inv_num']); ?></div>
-                                            <div style="font-size: 11px; color: var(--text-muted);">
-                                                <?php echo date('d M Y', strtotime($invoice['created_at'])); ?> • <?php echo $invoice['item_count']; ?> items
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <?php echo getPaymentStatusBadge($invoice['pending_amount']); ?>
-                                </div>
-                                
-                                <div class="mobile-card-row">
-                                    <span class="mobile-card-label">Total Amount</span>
-                                    <span class="mobile-card-value fw-bold"><?php echo formatCurrency($invoice['total']); ?></span>
-                                </div>
-                                
-                                <div class="mobile-card-row">
-                                    <span class="mobile-card-label">Paid Amount</span>
-                                    <span class="mobile-card-value" style="color: #10b981;"><?php echo formatCurrency($invoice['cash_received']); ?></span>
-                                </div>
-                                
-                                <div class="mobile-card-row">
-                                    <span class="mobile-card-label">Pending Amount</span>
-                                    <span class="mobile-card-value" style="color: <?php echo $invoice['pending_amount'] > 0 ? '#dc2626' : '#64748b'; ?>;">
-                                        <?php echo formatCurrency($invoice['pending_amount']); ?>
-                                    </span>
-                                </div>
-                                
-                                <div class="mobile-card-row">
-                                    <span class="mobile-card-label">Payment Method</span>
-                                    <span class="mobile-card-value">
-                                        <span class="payment-method-badge">
-                                            <i class="bi bi-<?php 
-                                                echo $invoice['payment_method'] == 'cash' ? 'cash' : 
-                                                    ($invoice['payment_method'] == 'card' ? 'credit-card' : 
-                                                    ($invoice['payment_method'] == 'upi' ? 'phone' : 'bank')); 
-                                            ?>"></i>
-                                            <?php echo ucfirst($invoice['payment_method']); ?>
-                                        </span>
-                                    </span>
-                                </div>
-                                
-                                <?php if ($is_admin): ?>
-                                    <div class="mobile-card-actions">
-                                        <a href="view_invoice.php?id=<?php echo $invoice['id']; ?>" class="btn btn-sm btn-outline-info flex-fill">
-                                            <i class="bi bi-eye me-1"></i>View
-                                        </a>
-                                        
-                                        <a href="print_invoice.php?id=<?php echo $invoice['id']; ?>" target="_blank" class="btn btn-sm btn-outline-secondary flex-fill">
-                                            <i class="bi bi-printer me-1"></i>Print
-                                        </a>
-                                        
-                                        <?php if ($invoice['pending_amount'] > 0): ?>
-                                            <button class="btn btn-sm collect-payment-btn flex-fill" data-bs-toggle="modal" data-bs-target="#paymentModal<?php echo $invoice['id']; ?>">
-                                                <i class="bi bi-cash me-1"></i>Collect
-                                            </button>
-                                        <?php endif; ?>
-                                        
-                                        <form method="POST" action="customer_payment_history.php?customer_id=<?php echo $customer_id; ?>" 
-                                              style="flex: 1;" onsubmit="return confirm('Delete this invoice? This will reverse stock.')">
-                                            <input type="hidden" name="action" value="delete_invoice">
-                                            <input type="hidden" name="invoice_id" value="<?php echo $invoice['id']; ?>">
-                                            <button type="submit" class="btn btn-sm btn-outline-danger w-100">
-                                                <i class="bi bi-trash me-1"></i>Delete
-                                            </button>
-                                        </form>
-                                    </div>
-                                <?php endif; ?>
-                            </div>
-                        <?php endforeach; ?>
-                    <?php else: ?>
-                        <div style="text-align: center; padding: 40px 16px; color: var(--text-muted);">
-                            <i class="bi bi-receipt d-block mb-2" style="font-size: 48px;"></i>
-                            <div style="font-size: 15px; font-weight: 500; margin-bottom: 4px;">No invoices found</div>
-                            <div style="font-size: 13px;">
-                                This customer has no invoice history yet.
-                            </div>
-                        </div>
-                    <?php endif; ?>
                 </div>
             </div>
         </div>
@@ -974,8 +1140,113 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
     </div>
 </div>
 
+<!-- Opening Balance Payment Modal -->
+<?php if ($opening_balance > 0 && $is_admin): ?>
+    <div class="modal fade" id="openingBalanceModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <form method="POST" action="customer_payment_history.php?customer_id=<?php echo $customer_id; ?>">
+                    <input type="hidden" name="action" value="collect_opening_balance">
+                    
+                    <div class="modal-header">
+                        <h5 class="modal-title">
+                            <i class="bi bi-wallet2 me-2"></i>
+                            Collect Opening Balance
+                        </h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label class="form-label">Customer</label>
+                            <input type="text" class="form-control" value="<?php echo htmlspecialchars($customer['customer_name']); ?>" readonly disabled>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Opening Balance (Previous Dues)</label>
+                            <input type="text" class="form-control bg-light text-danger fw-bold" 
+                                   value="<?php echo formatCurrency($opening_balance); ?>" readonly disabled>
+                        </div>
+                        
+                        <div class="alert alert-info">
+                            <i class="bi bi-info-circle me-2"></i>
+                            This is the opening balance set when the customer was created.
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Payment Method <span class="text-danger">*</span></label>
+                            <div class="payment-method-selector">
+                                <div class="payment-method-option">
+                                    <input type="radio" name="payment_method" id="opening_cash" value="cash" checked>
+                                    <label for="opening_cash">
+                                        <i class="bi bi-cash"></i>
+                                        <span>Cash</span>
+                                    </label>
+                                </div>
+                                
+                                <div class="payment-method-option">
+                                    <input type="radio" name="payment_method" id="opening_card" value="card">
+                                    <label for="opening_card">
+                                        <i class="bi bi-credit-card"></i>
+                                        <span>Card</span>
+                                    </label>
+                                </div>
+                                
+                                <div class="payment-method-option">
+                                    <input type="radio" name="payment_method" id="opening_upi" value="upi">
+                                    <label for="opening_upi">
+                                        <i class="bi bi-phone"></i>
+                                        <span>UPI</span>
+                                    </label>
+                                </div>
+                                
+                                <div class="payment-method-option">
+                                    <input type="radio" name="payment_method" id="opening_bank" value="bank">
+                                    <label for="opening_bank">
+                                        <i class="bi bi-bank"></i>
+                                        <span>Bank</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Reference No. (Optional)</label>
+                            <input type="text" name="reference_no" class="form-control" placeholder="Cheque/Transaction/Reference number">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Notes (Optional)</label>
+                            <textarea name="notes" class="form-control" rows="2" placeholder="Additional notes about this payment"></textarea>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Amount to Collect <span class="text-danger">*</span></label>
+                            <div class="input-group">
+                                <span class="input-group-text">₹</span>
+                                <input type="number" name="paid_amount" class="form-control" 
+                                       step="0.01" min="0.01" max="<?php echo $opening_balance; ?>" 
+                                       value="<?php echo $opening_balance; ?>" required>
+                            </div>
+                            <small class="text-muted">Maximum: <?php echo formatCurrency($opening_balance); ?></small>
+                        </div>
+                    </div>
+                    
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-cash me-2"></i>
+                            Collect Payment
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+<?php endif; ?>
+
 <!-- Overall Payment Modal -->
-<?php if ($total_pending > 0 && $is_admin): ?>
+<?php if ($grand_total_pending > 0 && $is_admin): ?>
     <div class="modal fade" id="overallPaymentModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog">
             <div class="modal-content">
@@ -999,12 +1270,31 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                         <div class="mb-3">
                             <label class="form-label">Total Pending Amount</label>
                             <input type="text" class="form-control bg-light text-danger fw-bold" 
-                                   value="<?php echo formatCurrency($total_pending); ?>" readonly disabled>
+                                   value="<?php echo formatCurrency($grand_total_pending); ?>" readonly disabled>
                         </div>
                         
-                        <div class="alert alert-info">
-                            <i class="bi bi-info-circle me-2"></i>
-                            This will mark all pending invoices as paid. Total amount to collect: <?php echo formatCurrency($total_pending); ?>
+                        <?php if ($opening_balance > 0 && $total_pending > 0): ?>
+                            <div class="alert alert-info">
+                                <i class="bi bi-info-circle me-2"></i>
+                                <strong>Breakdown:</strong><br>
+                                • Opening Balance: <?php echo formatCurrency($opening_balance); ?><br>
+                                • Invoice Pending: <?php echo formatCurrency($total_pending); ?>
+                            </div>
+                        <?php elseif ($opening_balance > 0): ?>
+                            <div class="alert alert-info">
+                                <i class="bi bi-info-circle me-2"></i>
+                                Only opening balance pending: <?php echo formatCurrency($opening_balance); ?>
+                            </div>
+                        <?php elseif ($total_pending > 0): ?>
+                            <div class="alert alert-info">
+                                <i class="bi bi-info-circle me-2"></i>
+                                Only invoice pending: <?php echo formatCurrency($total_pending); ?>
+                            </div>
+                        <?php endif; ?>
+                        
+                        <div class="alert alert-warning">
+                            <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                            This will clear all pending amounts including opening balance and all pending invoices.
                         </div>
                         
                         <div class="mb-3">
@@ -1043,13 +1333,23 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                 </div>
                             </div>
                         </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Reference No. (Optional)</label>
+                            <input type="text" name="reference_no" class="form-control" placeholder="Cheque/Transaction/Reference number">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Notes (Optional)</label>
+                            <textarea name="notes" class="form-control" rows="2" placeholder="Additional notes about this payment"></textarea>
+                        </div>
                     </div>
                     
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                        <button type="submit" class="btn btn-success" onclick="return confirm('Are you sure you want to collect all pending payments?')">
+                        <button type="submit" class="btn btn-success" onclick="return confirm('Are you sure you want to collect all pending payments? This will clear all dues including opening balance and all pending invoices.')">
                             <i class="bi bi-check-circle me-2"></i>
-                            Collect ₹<?php echo number_format($total_pending, 2); ?>
+                            Collect ₹<?php echo number_format($grand_total_pending, 2); ?>
                         </button>
                     </div>
                 </form>
@@ -1065,6 +1365,7 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
 <script src="https://cdn.datatables.net/buttons/2.3.6/js/buttons.print.min.js"></script>
 <script>
 $(document).ready(function() {
+    // Initialize payment history table
     $('#paymentHistoryTable').DataTable({
         pageLength: 25,
         order: [[0, 'desc']],
@@ -1090,7 +1391,6 @@ $(document).ready(function() {
                     columns: [0, 1, 2, 3, 4, 5, 6, 7, 8],
                     format: {
                         body: function(data, row, column, node) {
-                            // Remove ₹ symbol and commas for numeric fields
                             if (column === 3 || column === 4 || column === 5) {
                                 return data.replace(/[₹,]/g, '');
                             }
@@ -1108,8 +1408,40 @@ $(document).ready(function() {
                     columns: [0, 1, 2, 3, 4, 5, 6, 7, 8],
                     format: {
                         body: function(data, row, column, node) {
-                            // Remove ₹ symbol and commas for numeric fields
                             if (column === 3 || column === 4 || column === 5) {
+                                return data.replace(/[₹,]/g, '');
+                            }
+                            return data;
+                        }
+                    }
+                }
+            }
+        ]
+    });
+    
+    // Initialize opening payments table
+    <?php if (!empty($opening_payments_list)): ?>
+    $('#openingPaymentsTable').DataTable({
+        pageLength: 25,
+        order: [[0, 'desc']],
+        language: {
+            search: "Search opening balance payments:",
+            lengthMenu: "Show _MENU_ payments",
+            info: "Showing _START_ to _END_ of _TOTAL_ payments",
+            emptyTable: "No opening balance payments found"
+        },
+        dom: 'Bfrtip',
+        buttons: [
+            {
+                extend: 'excelHtml5',
+                text: '<i class="bi bi-file-earmark-excel"></i> Excel',
+                title: 'Opening_Balance_Payments_<?php echo $customer['customer_name']; ?>',
+                className: 'btn btn-sm btn-outline-success',
+                exportOptions: {
+                    columns: [0, 1, 2, 3, 4],
+                    format: {
+                        body: function(data, row, column, node) {
+                            if (column === 1) {
                                 return data.replace(/[₹,]/g, '');
                             }
                             return data;
@@ -1118,26 +1450,25 @@ $(document).ready(function() {
                 }
             },
             {
-                extend: 'pdfHtml5',
-                text: '<i class="bi bi-file-earmark-pdf"></i> PDF',
-                title: 'Payment History - <?php echo $customer['customer_name']; ?>',
-                className: 'btn btn-sm btn-outline-danger',
-                orientation: 'landscape',
-                pageSize: 'A4',
+                extend: 'csvHtml5',
+                text: '<i class="bi bi-file-earmark-spreadsheet"></i> CSV',
+                title: 'Opening_Balance_Payments_<?php echo $customer['customer_name']; ?>',
+                className: 'btn btn-sm btn-outline-primary',
                 exportOptions: {
-                    columns: [0, 1, 2, 3, 4, 5, 6, 7, 8]
-                }
-            },
-            {
-                extend: 'print',
-                text: '<i class="bi bi-printer"></i> Print',
-                className: 'btn btn-sm btn-outline-secondary',
-                exportOptions: {
-                    columns: [0, 1, 2, 3, 4, 5, 6, 7, 8]
+                    columns: [0, 1, 2, 3, 4],
+                    format: {
+                        body: function(data, row, column, node) {
+                            if (column === 1) {
+                                return data.replace(/[₹,]/g, '');
+                            }
+                            return data;
+                        }
+                    }
                 }
             }
         ]
     });
+    <?php endif; ?>
 });
 
 // Validate payment amount
@@ -1150,11 +1481,6 @@ function validatePayment(input, maxAmount) {
     if (value < 0.01) {
         input.value = 0.01;
     }
-}
-
-// Format currency for display
-function formatCurrency(amount) {
-    return '₹' + parseFloat(amount).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,');
 }
 </script>
 </body>

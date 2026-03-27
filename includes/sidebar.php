@@ -207,6 +207,12 @@ $menu_items = [
                 'url' => 'stock.php',
                 'roles' => ['admin', 'sale']
             ],
+            'oc-report' => [
+                'title' => 'O/C Report',
+                'icon' => 'bi-graph-up-arrow',
+                'url' => 'oc_report.php',
+                'roles' => ['admin', 'sale']
+            ],
             'profit-loss' => [
                 'title' => 'Profit & Loss',
                 'icon' => 'bi-bar-chart-line',
@@ -217,6 +223,12 @@ $menu_items = [
                 'title' => 'GST Report',
                 'icon' => 'bi-file-spreadsheet',
                 'url' => 'gst_reports.php',
+                'roles' => ['admin']
+            ],
+            'payment-methods' => [
+                'title' => 'Payment Methods Report',
+                'icon' => 'bi-wallet2',
+                'url' => 'payment-methods-report.php',
                 'roles' => ['admin']
             ],
             'activity-log' => [

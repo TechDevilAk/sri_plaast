@@ -281,29 +281,21 @@ HEADER
 
 $html = '
 <table border="1" cellpadding="4" cellspacing="0">
-
-<tr>
-<td colspan="2" align="center" style="font-size:16px;"><b>TAX INVOICE</b></td>
-</tr>
-
-<tr>
-<td width="70%"></td>
-<td width="30%" align="right"><b>[ORIGINAL FOR RECIPIENT]</b></td>
-</tr>
-
+    <tr>
+        <td colspan="2" align="center" style="font-size:16px;"><b>TAX INVOICE</b></td>
+    </tr>
+    <tr>
+        <td width="70%"></td>
+        <td width="30%" align="right"><b>[ORIGINAL FOR RECIPIENT]</b></td>
+    </tr>
 </table>
 
 <table border="1" cellpadding="4" cellspacing="0">
-
-<tr>
-
-<td width="50%">
-
-<table border="0">
-
-<tr>
-
-<td width="20%">';
+    <tr>
+        <td width="50%">
+            <table border="0">
+                <tr>
+                    <td width="20%">';
 
 if (!empty($setting['logo']) && file_exists($setting['logo'])) {
     $html .= '<img src="' . $setting['logo'] . '" height="45">';
@@ -312,55 +304,37 @@ if (!empty($setting['logo']) && file_exists($setting['logo'])) {
 }
 
 $html .= '</td>
+                    <td width="80%">
+                        <b style="font-size:16px">' . htmlspecialchars($setting['company_name'] ?? 'SRI PLAAST') . '</b><br>
+                        ' . nl2br(htmlspecialchars($setting['company_address'] ?? 'No.10 Industrial Area, Dharmapuri, Tamil Nadu')) . '<br>
+                        <b>Cell :</b> ' . htmlspecialchars($setting['phone'] ?? '7904448752') . '<br>
+                        <b>GSTIN :</b> ' . htmlspecialchars($setting['gst_number'] ?? '33ABCDE1234F1Z5') . '
+                    </td>
+                </tr>
+            </table>
+        </td>
 
-<td width="80%">
-
-<b style="font-size:16px">' . htmlspecialchars($setting['company_name'] ?? 'SRI PLAAST') . '</b><br>
-
-' . nl2br(htmlspecialchars($setting['company_address'] ?? 'No.10 Industrial Area, Dharmapuri, Tamil Nadu')) . '<br>
-
-<b>Cell :</b> ' . htmlspecialchars($setting['phone'] ?? '7904448752') . '<br>
-
-<b>GSTIN :</b> ' . htmlspecialchars($setting['gst_number'] ?? '33ABCDE1234F1Z5') . '
-
-</td>
-
-</tr>
-
-</table>
-
-</td>
-
-<td width="50%">
-
-<table border="1" cellpadding="3" cellspacing="0">
-
-<tr>
-<td width="50%"><b>Invoice No :</b><br>' . htmlspecialchars($invoice['inv_num'] ?? 'SP0001') . '</td>
-<td width="50%"><b>Date :</b><br>' . (!empty($invoice['created_at']) ? date('d/m/Y', strtotime($invoice['created_at'])) : '13/03/2026') . '</td>
-</tr>
-
-<tr>
-<td><b>Delivery Note :</b><br>-</td>
-<td><b>Mode / Terms of Payment :</b><br>' . getPaymentMethodDisplay($invoice) . '</td>
-</tr>
-
-<tr>
-<td><b>E-way Bill No :</b><br>' . htmlspecialchars($invoice['e_way_bill'] ?? '') . '</td>
-<td><b>Place of Supply :</b><br>' . htmlspecialchars($invoice['place_of_supply'] ?? 'TAMIL NADU (33)') . '</td>
-</tr>
-
-<tr>
-<td><b>Dispatched Through :</b><br>' . htmlspecialchars($invoice['dispatch_through'] ?? '') . '</td>
-<td><b>Other Reference :</b><br>' . htmlspecialchars($invoice['other_reference'] ?? '') . '</td>
-</tr>
-
-</table>
-
-</td>
-
-</tr>
-
+        <td width="50%">
+            <table border="1" cellpadding="3" cellspacing="0">
+                <tr>
+                    <td width="50%"><b>Invoice No :</b><br>' . htmlspecialchars($invoice['inv_num'] ?? 'SP0001') . '</td>
+                    <td width="50%"><b>Date :</b><br>' . (!empty($invoice['created_at']) ? date('d/m/Y', strtotime($invoice['created_at'])) : '13/03/2026') . '</td>
+                </tr>
+                <tr>
+                    <td><b>Delivery Note :</b><br>-</td>
+                    <td><b>Mode / Terms of Payment :</b><br>' . getPaymentMethodDisplay($invoice) . '</td>
+                </tr>
+                <tr>
+                    <td><b>E-way Bill No :</b><br>' . htmlspecialchars($invoice['e_way_bill'] ?? '') . '</td>
+                    <td><b>Place of Supply :</b><br>' . htmlspecialchars($invoice['place_of_supply'] ?? 'TAMIL NADU (33)') . '</td>
+                </tr>
+                <tr>
+                    <td><b>Dispatched Through :</b><br>' . htmlspecialchars($invoice['dispatch_through'] ?? '') . '</td>
+                    <td><b>Other Reference :</b><br>' . htmlspecialchars($invoice['other_reference'] ?? '') . '</td>
+                </tr>
+            </table>
+        </td>
+    </tr>
 </table>
 
 ';
@@ -372,30 +346,19 @@ BILLING + SHIPPING
 $html .= '
 
 <table border="1" cellpadding="4" cellspacing="0">
+    <tr>
+        <td width="50%">
+            <b>Buyer (Billing To)</b><br>
+            ' . htmlspecialchars($invoice['customer_name'] ?? 'ABC TRADERS') . '<br>
+            ' . nl2br(htmlspecialchars($invoice['customer_address'] ?? '')) . '<br>
+            <b>Cell :</b> ' . htmlspecialchars($invoice['customer_phone'] ?? '') . '<br>
+            <b>GSTIN :</b> ' . htmlspecialchars($invoice['customer_gst'] ?? '') . '<br>
+            <b>State Name :</b> TAMIL NADU &nbsp; <b>State Code :</b> 33
+        </td>
 
-<tr>
-
-<td width="50%">
-
-<b>Buyer (Billing To)</b><br>
-
-' . htmlspecialchars($invoice['customer_name'] ?? 'ABC TRADERS') . '<br>
-
-' . nl2br(htmlspecialchars($invoice['customer_address'] ?? '')) . '<br>
-
-<b>Cell :</b> ' . htmlspecialchars($invoice['customer_phone'] ?? '') . '<br>
-
-<b>GSTIN :</b> ' . htmlspecialchars($invoice['customer_gst'] ?? '') . '<br>
-
-<b>State Name :</b> TAMIL NADU &nbsp; <b>State Code :</b> 33
-
-</td>
-
-<td width="50%">
-
-<b>Consignee (Shipping To)</b><br>
-
-' . htmlspecialchars($invoice['customer_name'] ?? 'ABC TRADERS') . '<br>';
+        <td width="50%">
+            <b>Consignee (Shipping To)</b><br>
+            ' . htmlspecialchars($invoice['customer_name'] ?? 'ABC TRADERS') . '<br>';
 
 if (!empty($invoice['shipping_address'])) {
     $html .= nl2br(htmlspecialchars($invoice['shipping_address'])) . '<br>';
@@ -404,11 +367,8 @@ if (!empty($invoice['shipping_address'])) {
 }
 
 $html .= '<b>State Name :</b> TAMIL NADU &nbsp; <b>State Code :</b> 33
-
-</td>
-
-</tr>
-
+        </td>
+    </tr>
 </table>
 
 ';
@@ -420,18 +380,17 @@ ITEM TABLE
 $html .= '
 
 <table border="1" cellpadding="4" cellspacing="0">
-
-<tr style="background:#e0e0e0; font-weight:bold;">
-<th width="5%">S.No</th>
-<th width="35%">DESCRIPTION</th>
-<th width="10%">HSN</th>
-<th width="7%">UNIT</th>
-<th width="8%">QTY</th>
-<th width="7%">PCS</th>
-<th width="8%">RATE</th>
-<th width="10%">DISCOUNT</th>
-<th width="10%">TAXABLE</th>
-</tr>
+    <tr style="background:#e0e0e0; font-weight:bold;">
+        <th width="5%">S.No</th>
+        <th width="35%">DESCRIPTION</th>
+        <th width="10%">HSN</th>
+        <th width="7%">UNIT</th>
+        <th width="8%">QTY</th>
+        <th width="7%">PCS</th>
+        <th width="8%">RATE</th>
+        <th width="10%">DISCOUNT</th>
+        <th width="10%">TAXABLE</th>
+    </tr>
 
 ';
 
@@ -450,73 +409,67 @@ foreach ($items as $item) {
     $unit = htmlspecialchars($item['unit'] ?? 'BAGS');
 
     $html .= '
-
-<tr>
-
-<td align="center">' . $sn++ . '</td>
-<td>' . $desc . '</td>
-<td align="center">' . $hsn . '</td>
-<td align="center">' . $unit . '</td>
-<td align="center">' . ($qty > 0 ? formatNum($qty) : '-') . '</td>
-<td align="center">' . ($pieces > 0 ? formatNum($pieces) : '-') . '</td>
-<td align="right">&#8377; ' . formatNum($rate, 2) . '</td>
-<td align="center">' . $disc_str . '</td>
-<td align="right">&#8377; ' . formatNum($taxable) . '</td>
-
-</tr>
-
-';
+    <tr>
+        <td align="center">' . $sn++ . '</td>
+        <td>' . $desc . '</td>
+        <td align="center">' . $hsn . '</td>
+        <td align="center">' . $unit . '</td>
+        <td align="center">' . ($qty > 0 ? formatNum($qty) : '-') . '</td>
+        <td align="center">' . ($pieces > 0 ? formatNum($pieces) : '-') . '</td>
+        <td align="right">&#8377; ' . formatNum($rate, 2) . '</td>
+        <td align="center">' . $disc_str . '</td>
+        <td align="right">&#8377; ' . formatNum($taxable) . '</td>
+    </tr>
+    ';
 }
 
 $html .= '
 
-<tr style="background:#f0f0f0; font-weight:bold;">
-
-<td colspan="4" align="right"><b>Total</b></td>
-
-<td align="center">' . formatNum($total_bags) . '</td>
-
-<td align="center">' . formatNum($total_pieces) . '</td>
-
-<td colspan="2"></td>
-
-<td align="right"><b>&#8377; ' . formatNum($total_taxable) . '</b></td>
-
-</tr>
-
+    <tr style="background:#f0f0f0; font-weight:bold;">
+        <td colspan="4" align="right"><b>Total</b></td>
+        <td align="center">' . formatNum($total_bags) . '</td>
+        <td align="center">' . formatNum($total_pieces) . '</td>
+        <td colspan="2"></td>
+        <td align="right"><b>&#8377; ' . formatNum($total_taxable) . '</b></td>
+    </tr>
 </table>
 
 ';
 
 /* -----------------------------
-BOTTOM SECTION
+BOTTOM SECTION - MODIFIED
 ----------------------------- */
+
+// Get GST totals
+$total_cgst = (float)($invoice['cgst_amount'] ?? 0);
+$total_sgst = (float)($invoice['sgst_amount'] ?? 0);
+$total_igst = (float)($invoice['igst_amount'] ?? 0);
+$cash_received = (float)($invoice['cash_received'] ?? 0);
+$pending_amount = (float)($invoice['pending_amount'] ?? 0);
+$subtotal = (float)($invoice['subtotal'] ?? $total_taxable);
+$total_invoice = (float)($invoice['total'] ?? 0);
+$freight_charge = (float)($invoice['freight_charge'] ?? $invoice['shipping_charges'] ?? 0);
+$overall_discount = (float)($invoice['overall_discount'] ?? 0);
 
 $html .= '
 
 <table border="1" cellpadding="4" cellspacing="0">
+    <tr>
+        <td width="55%">
+            <b>Amount Chargeable in words :</b><br>
+            <b style="font-size:10px;">' . strtoupper(numberToWords($total_invoice)) . '</b>
+            <br><br><br>
+            <b>TAXATION</b>
 
-<tr>
-
-<td width="55%">
-
-<b>Amount Chargeable in words :</b><br>
-<b style="font-size:10px;">' . strtoupper(numberToWords($invoice['total'] ?? 0)) . '</b>
-<br>
-<br>
-<br>
-<b>TAXATION</b>
-
-<table border="1" cellpadding="4" cellspacing="0">
-
-<tr style="background:#e0e0e0; font-weight:bold;">
-<th>CGST %</th>
-<th>Amount</th>
-<th>SGST %</th>
-<th>Amount</th>
-<th>IGST %</th>
-<th>Amount</th>
-</tr>';
+            <table border="1" cellpadding="4" cellspacing="0" style="margin-top:5px;">
+                <tr style="background:#e0e0e0; font-weight:bold;">
+                    <th align="center">CGST %</th>
+                    <th align="center">Amount</th>
+                    <th align="center">SGST %</th>
+                    <th align="center">Amount</th>
+                    <th align="center">IGST %</th>
+                    <th align="center">Amount</th>
+                </tr>';
 
 // Group items by GST rate for display
 $cgst_rates = [];
@@ -538,27 +491,17 @@ foreach ($items as $item) {
     }
 }
 
-$total_cgst = (float)($invoice['cgst_amount'] ?? 0);
-$total_sgst = (float)($invoice['sgst_amount'] ?? 0);
-$total_igst = (float)($invoice['igst_amount'] ?? 0);
-$total_tax = $total_cgst + $total_sgst + $total_igst;
-
-// Calculate paid and pending amounts
-$cash_received = (float)($invoice['cash_received'] ?? 0);
-$pending_amount = (float)($invoice['pending_amount'] ?? 0);
-$total_invoice = (float)($invoice['total'] ?? 0);
-
 // If no GST rates found, use invoice totals
 if (empty($cgst_rates) && empty($sgst_rates) && empty($igst_rates)) {
     $html .= '
-<tr>
-<td align="center">' . ($total_cgst > 0 ? '9%' : '-') . '</td>
-<td align="right">' . ($total_cgst > 0 ? '&#8377; ' . formatNum($total_cgst) : '-') . '</td>
-<td align="center">' . ($total_sgst > 0 ? '9%' : '-') . '</td>
-<td align="right">' . ($total_sgst > 0 ? '&#8377; ' . formatNum($total_sgst) : '-') . '</td>
-<td align="center">' . ($total_igst > 0 ? '18%' : '-') . '</td>
-<td align="right">' . ($total_igst > 0 ? '&#8377; ' . formatNum($total_igst) : '-') . '</td>
-</tr>';
+                <tr>
+                    <td align="center">' . ($total_cgst > 0 ? '9.0%' : '-') . '</td>
+                    <td align="right">' . ($total_cgst > 0 ? formatNum($total_cgst) : '-') . '</td>
+                    <td align="center">' . ($total_sgst > 0 ? '9.0%' : '-') . '</td>
+                    <td align="right">' . ($total_sgst > 0 ? formatNum($total_sgst) : '-') . '</td>
+                    <td align="center">' . ($total_igst > 0 ? '18.0%' : '-') . '</td>
+                    <td align="right">' . ($total_igst > 0 ? formatNum($total_igst) : '-') . '</td>
+                </tr>';
 } else {
     $max_rows = max(count($cgst_rates), count($sgst_rates), count($igst_rates));
     $cgst_keys = array_keys($cgst_rates);
@@ -566,14 +509,15 @@ if (empty($cgst_rates) && empty($sgst_rates) && empty($igst_rates)) {
     $igst_keys = array_keys($igst_rates);
 
     for ($i = 0; $i < $max_rows; $i++) {
-        $html .= '<tr>';
+        $html .= '
+                <tr>';
 
         // CGST column
         if (isset($cgst_keys[$i])) {
             $rate = $cgst_keys[$i];
             $amount = $cgst_rates[$rate];
             $html .= '<td align="center">' . formatNum($rate, 1) . '%</td>';
-            $html .= '<td align="right">&#8377; ' . formatNum($amount, 2) . '</td>';
+            $html .= '<td align="right">' . formatNum($amount, 2) . '</td>';
         } else {
             $html .= '<td align="center">-</td><td align="right">-</td>';
         }
@@ -583,7 +527,7 @@ if (empty($cgst_rates) && empty($sgst_rates) && empty($igst_rates)) {
             $rate = $sgst_keys[$i];
             $amount = $sgst_rates[$rate];
             $html .= '<td align="center">' . formatNum($rate, 1) . '%</td>';
-            $html .= '<td align="right">&#8377; ' . formatNum($amount, 2) . '</td>';
+            $html .= '<td align="right">' . formatNum($amount, 2) . '</td>';
         } else {
             $html .= '<td align="center">-</td><td align="right">-</td>';
         }
@@ -593,100 +537,83 @@ if (empty($cgst_rates) && empty($sgst_rates) && empty($igst_rates)) {
             $rate = $igst_keys[$i];
             $amount = $igst_rates[$rate];
             $html .= '<td align="center">' . formatNum($rate, 1) . '%</td>';
-            $html .= '<td align="right">&#8377; ' . formatNum($amount, 2) . '</td>';
+            $html .= '<td align="right">' . formatNum($amount, 2) . '</td>';
         } else {
             $html .= '<td align="center">-</td><td align="right">-</td>';
         }
 
-        $html .= '</tr>';
+        $html .= '
+                </tr>';
     }
 }
 
 $html .= '
+            </table>
+        </td>
 
+        <td width="45%" style="vertical-align:top;">
+            <!-- Right Side Summary -->
+            <table border="1" cellpadding="4" cellspacing="0" style="width:100%;">
+                <tr>
+                    <td><b>Freight Charges :</b></td>
+                    <td align="right">&#8377; ' . formatNum($freight_charge) . '</td>
+                </tr>';
+
+if ($overall_discount > 0) {
+    $html .= '
+                <tr>
+                    <td><b>Discount :</b></td>
+                    <td align="right">- &#8377; ' . formatNum($overall_discount) . '</td>
+                </tr>';
+}
+
+$html .= '
+                <tr>
+                    <td><b>Subtotal :</b></td>
+                    <td align="right">&#8377; ' . formatNum($subtotal) . '</td>
+                </tr>
+                <tr style="background:#f0f0f0; font-weight:bold;">
+                    <td><b>Net Total :</b></td>
+                    <td align="right"><b>&#8377; ' . formatNum($total_invoice) . '</b></td>
+                </tr>
+                <tr style="background:#e0f7fa;">
+                    <td><b>Amount Paid :</b></td>
+                    <td align="right"><b>&#8377; ' . formatNum($cash_received) . '</b></td>
+                </tr>
+                <tr style="background:#ffebee;">
+                    <td><b>Pending Amount :</b></td>
+                    <td align="right"><b>&#8377; ' . formatNum($pending_amount) . '</b></td>
+                </tr>
+            </table>
+        </td>
+    </tr>
 </table>
 
 <br>
 
 <!-- Payment Summary Section -->
 <table border="1" cellpadding="4" cellspacing="0" style="width:100%; margin-bottom:10px;">
-<tr style="background:#e0e0e0; font-weight:bold;">
-<td colspan="2">Payment Summary</td>
-</tr>
-<tr>
-<td width="50%"><b>Payment Mode:</b></td>
-<td width="50%">' . getPaymentMethodDisplay($invoice) . '</td>
-</tr>
-<tr>
-<td><b>Payment Breakdown:</b></td>
-<td>' . getPaymentBreakdown($invoice) . '</td>
-</tr>
-' . (($pending_amount > 0 && !empty($invoice['credit_due_date'])) ? '
-<tr>
-<td><b>Credit Due Date:</b></td>
-<td>' . date('d/m/Y', strtotime($invoice['credit_due_date'])) . '</td>
-</tr>' : '') . '
-' . ((!empty($invoice['cheque_number'])) ? '
-<tr>
-<td><b>Cheque Details:</b></td>
-<td>No: ' . htmlspecialchars($invoice['cheque_number']) . ', Date: ' . (!empty($invoice['cheque_date']) ? date('d/m/Y', strtotime($invoice['cheque_date'])) : '') . ', Bank: ' . htmlspecialchars($invoice['cheque_bank']) . '</td>
-</tr>' : '') . '
-</table>
-
-</td>
-
-<td width="45%" style="vertical-align:top;">
-
-<!-- Right Side Summary with Borders -->
-<table border="1" cellpadding="4" cellspacing="0" style="width:100%;">';
-
-$freight_charge = 0;
-// Check if freight column exists in invoice
-if (isset($invoice['freight_charge'])) {
-    $freight_charge = (float)$invoice['freight_charge'];
-    $html .= '<tr><td><b>Freight Charges :</b></td><td align="right">&#8377; ' . formatNum($freight_charge) . '</td></tr>';
-} elseif (isset($invoice['shipping_charges'])) {
-    $freight_charge = (float)$invoice['shipping_charges'];
-    $html .= '<tr><td><b>Freight Charges :</b></td><td align="right">&#8377; ' . formatNum($freight_charge) . '</td></tr>';
-} else {
-    $html .= '<tr><td><b>Freight Charges :</b></td><td align="right">&#8377; 0.00</td></tr>';
-}
-
-if (!empty($invoice['overall_discount']) && $invoice['overall_discount'] > 0) {
-    $html .= '<tr><td><b>Discount :</b></td><td align="right">- &#8377; ' . formatNum($invoice['overall_discount'] ?? 0) . '</td></tr>';
-}
-
-$html .= '
-
-<tr><td><b>Subtotal :</b></td><td align="right">&#8377; ' . formatNum($invoice['subtotal'] ?? $total_taxable) . '</td></tr>
-
-<tr><td><b>CGST :</b></td><td align="right">&#8377; ' . formatNum($total_cgst) . '</td></tr>
-
-<tr><td><b>SGST :</b></td><td align="right">&#8377; ' . formatNum($total_sgst) . '</td></tr>
-
-<tr><td><b>IGST :</b></td><td align="right">&#8377; ' . formatNum($total_igst) . '</td></tr>
-
-<tr style="background:#f0f0f0; font-weight:bold;">
-<td><b>Net Total :</b></td>
-<td align="right"><b>&#8377; ' . formatNum($invoice['total'] ?? 0) . '</b></td>
-</tr>
-
-<tr style="background:#e0f7fa;">
-<td><b>Amount Paid :</b></td>
-<td align="right"><b>&#8377; ' . formatNum($cash_received) . '</b></td>
-</tr>
-
-<tr style="background:#ffebee;">
-<td><b>Pending Amount :</b></td>
-<td align="right"><b>&#8377; ' . formatNum($pending_amount) . '</b></td>
-</tr>
-
-</table>
-
-</td>
-
-</tr>
-
+    <tr style="background:#e0e0e0; font-weight:bold;">
+        <td colspan="2">Payment Summary</td>
+    </tr>
+    <tr>
+        <td width="50%"><b>Payment Mode:</b></td>
+        <td width="50%">' . getPaymentMethodDisplay($invoice) . '</td>
+    </tr>
+    <tr>
+        <td><b>Payment Breakdown:</b></td>
+        <td>' . getPaymentBreakdown($invoice) . '</td>
+    </tr>' . 
+    (($pending_amount > 0 && !empty($invoice['credit_due_date'])) ? '
+    <tr>
+        <td><b>Credit Due Date:</b></td>
+        <td>' . date('d/m/Y', strtotime($invoice['credit_due_date'])) . '</td>
+    </tr>' : '') . 
+    ((!empty($invoice['cheque_number'])) ? '
+    <tr>
+        <td><b>Cheque Details:</b></td>
+        <td>No: ' . htmlspecialchars($invoice['cheque_number']) . ', Date: ' . (!empty($invoice['cheque_date']) ? date('d/m/Y', strtotime($invoice['cheque_date'])) : '') . ', Bank: ' . htmlspecialchars($invoice['cheque_bank']) . '</td>
+    </tr>' : '') . '
 </table>
 
 ';

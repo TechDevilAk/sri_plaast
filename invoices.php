@@ -1025,13 +1025,14 @@ if (!empty($params)) {
                                                             </div>
 
                                                             <div class="mb-3">
-                                                                <label class="form-label">Current Paid Amount</label>
-                                                                <input type="text" class="form-control" value="<?php echo formatCurrency($invoice['cash_received']); ?>" readonly disabled>
+                                                                <label class="form-label">Current Pending Amount</label>
+                                                                <input type="text" class="form-control bg-light text-danger fw-bold" value="<?php echo formatCurrency($invoice['pending_amount']); ?>" readonly disabled>
                                                             </div>
 
                                                             <div class="mb-3">
-                                                                <label class="form-label">Current Pending Amount</label>
-                                                                <input type="text" class="form-control bg-light text-danger fw-bold" value="<?php echo formatCurrency($invoice['pending_amount']); ?>" readonly disabled>
+                                                                <label class="form-label">Total Amount Paid (Cumulative)</label>
+                                                                <input type="text" class="form-control" value="<?php echo formatCurrency((float)$invoice['total'] - (float)$invoice['pending_amount']); ?>" readonly disabled>
+                                                                <small class="text-muted">Calculated as: Invoice Total - Current Pending Amount</small>
                                                             </div>
 
                                                             <hr>
@@ -1052,23 +1053,27 @@ if (!empty($params)) {
                                                             </div>
 
                                                             <div class="mb-3">
-                                                                <label class="form-label">New Paid Amount <span class="text-danger">*</span></label>
+                                                                <label class="form-label">Now Paying Amount <span class="text-danger">*</span></label>
                                                                 <div class="input-group">
                                                                     <span class="input-group-text">₹</span>
-                                                                    <input type="number" name="paid_amount" class="form-control"
+                                                                    <input type="number" name="paid_amount" id="paid_amount<?php echo (int)$invoice['id']; ?>" class="form-control"
                                                                            step="0.01" min="0" max="<?php echo (float)$invoice['total']; ?>"
                                                                            value="<?php echo (float)$invoice['cash_received']; ?>"
-                                                                           onchange="updatePending(this, <?php echo (float)$invoice['total']; ?>, 'pending<?php echo (int)$invoice['id']; ?>')" required>
+                                                                           onchange="updateRemainingDue(this, <?php echo (float)$invoice['pending_amount']; ?>, 'remaining<?php echo (int)$invoice['id']; ?>')"
+                                                                           oninput="updateRemainingDue(this, <?php echo (float)$invoice['pending_amount']; ?>, 'remaining<?php echo (int)$invoice['id']; ?>')" required>
                                                                 </div>
                                                             </div>
 
                                                             <div class="mb-3">
-                                                                <label class="form-label">New Pending Amount</label>
-                                                                <input type="number" name="pending_amount" id="pending<?php echo (int)$invoice['id']; ?>"
-                                                                       class="form-control bg-light" step="0.01" readonly
-                                                                       value="<?php echo (float)$invoice['pending_amount']; ?>">
-                                                                <small class="text-muted">Auto-calculated based on paid amount</small>
+                                                                <label class="form-label">Remaining Due Amount</label>
+                                                                <input type="text" id="remaining<?php echo (int)$invoice['id']; ?>"
+                                                                       class="form-control bg-light fw-bold text-info" step="0.01" readonly
+                                                                       value="<?php echo formatCurrency($invoice['pending_amount']); ?>">
+                                                                <small class="text-muted">Calculated as: Current Pending Amount - Now Paying Amount</small>
                                                             </div>
+
+                                                            <input type="hidden" name="pending_amount" id="pending<?php echo (int)$invoice['id']; ?>"
+                                                                   value="<?php echo (float)$invoice['pending_amount']; ?>">
                                                         </div>
 
                                                         <div class="modal-footer">
@@ -1245,11 +1250,21 @@ document.getElementById('confirmDeleteBtn').addEventListener('click', function()
     confirmModal.hide();
 });
 
-function updatePending(input, total, pendingFieldId) {
-    const paidAmount = parseFloat(input.value) || 0;
-    let pendingAmount = total - paidAmount;
-    if (pendingAmount < 0) pendingAmount = 0;
-    document.getElementById(pendingFieldId).value = pendingAmount.toFixed(2);
+function updateRemainingDue(input, currentPendingAmount, remainingFieldId) {
+    const nowPayingAmount = parseFloat(input.value) || 0;
+    let remainingDue = currentPendingAmount - nowPayingAmount;
+    if (remainingDue < 0) remainingDue = 0;
+    
+    // Format as currency string with ₹ symbol for display
+    const formattedAmount = '₹' + remainingDue.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    document.getElementById(remainingFieldId).value = formattedAmount;
+    
+    // Update the hidden pending_amount field with the numeric value (for form submission)
+    const invoiceId = remainingFieldId.replace('remaining', '');
+    const pendingField = document.getElementById('pending' + invoiceId);
+    if (pendingField) {
+        pendingField.value = remainingDue.toFixed(2);
+    }
 }
 
 $(document).ready(function() {

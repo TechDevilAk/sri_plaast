@@ -689,18 +689,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // E-Way Bill Number
         $e_way_bill = escape($conn, trim($_POST['e_way_bill'] ?? ''));
 
-        // Shipping fields
+        // Shipping fields - auto-fetched from customer table
         $shipping_address = escape($conn, trim($_POST['shipping_address'] ?? ''));
-        $shipping_charges = (float)($_POST['shipping_charges'] ?? 0);
-        $shipping_method = escape($conn, trim($_POST['shipping_method'] ?? ''));
-        $delivery_date = escape($conn, trim($_POST['delivery_date'] ?? ''));
-        $delivery_time = escape($conn, trim($_POST['delivery_time'] ?? ''));
-        $tracking_number = escape($conn, trim($_POST['tracking_number'] ?? ''));
-        $shipping_cgst = (float)($_POST['shipping_cgst'] ?? 0);
-        $shipping_sgst = (float)($_POST['shipping_sgst'] ?? 0);
-        $shipping_cgst_amount = (float)($_POST['shipping_cgst_amount'] ?? 0);
-        $shipping_sgst_amount = (float)($_POST['shipping_sgst_amount'] ?? 0);
-        $shipping_total = (float)($_POST['shipping_total'] ?? 0);
+        $shipping_charges = 0; // Set to 0 - no manual shipping charges
+        $shipping_method = ''; // Set to empty - no manual shipping method
+        $delivery_date = ''; // Not set - removed from form
+        $delivery_time = ''; // Not set - removed from form
+        $tracking_number = ''; // Not set - removed from form
+        $shipping_cgst = 0; // Set to 0 - no shipping GST
+        $shipping_sgst = 0; // Set to 0 - no shipping GST
+        $shipping_cgst_amount = 0; // Set to 0
+        $shipping_sgst_amount = 0; // Set to 0
+        $shipping_total = 0; // Set to 0
         
         // New fields for invoice
         $dispatch_through = escape($conn, trim($_POST['dispatch_through'] ?? ''));
@@ -1532,86 +1532,8 @@ if ($current_user_id == 0) {
 
         <!-- Shipping Details - Only for Invoice mode -->
         <div class="card-custom" id="shippingFields">
-            <div class="card-header-custom">
-                <h5><i class="bi bi-truck me-1"></i>Shipping Details</h5>
-                <span class="badge-custom">Optional</span>
-            </div>
-
-            <div class="mb-2">
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="sameAsBillingAddress">
-                    <label class="form-check-label tiny" for="sameAsBillingAddress">
-                        Same as customer address
-                    </label>
-                </div>
-            </div>
-
-            <div class="row g-2">
-                <div class="col-md-6">
-                    <label class="form-label">Shipping Address</label>
-                    <textarea class="form-control" name="shipping_address" id="shipping_address" rows="2" placeholder="Enter shipping address..."><?php echo htmlspecialchars($edit_invoice['shipping_address'] ?? ''); ?></textarea>
-                </div>
-                
-                <div class="col-md-2">
-                    <label class="form-label">Shipping Charges</label>
-                    <input type="number" class="form-control" name="shipping_charges" id="shipping_charges" value="<?php echo $edit_invoice['shipping_charges'] ?? 0; ?>" step="0.01" min="0">
-                </div>
-                
-                <div class="col-md-2">
-                    <label class="form-label">GST on Shipping (%)</label>
-                    <select class="form-select" name="shipping_gst" id="shipping_gst">
-                        <option value="0" <?php echo (($edit_invoice['shipping_cgst'] ?? 0) == 0) ? 'selected' : ''; ?>>0%</option>
-                        <option value="5" <?php echo (($edit_invoice['shipping_cgst'] ?? 0) == 2.5) ? 'selected' : ''; ?>>5%</option>
-                        <option value="12" <?php echo (($edit_invoice['shipping_cgst'] ?? 0) == 6) ? 'selected' : ''; ?>>12%</option>
-                        <option value="18" <?php echo (($edit_invoice['shipping_cgst'] ?? 0) == 9) ? 'selected' : ''; ?>>18%</option>
-                        <option value="28" <?php echo (($edit_invoice['shipping_cgst'] ?? 0) == 14) ? 'selected' : ''; ?>>28%</option>
-                    </select>
-                </div>
-                
-                <div class="col-md-2">
-                    <label class="form-label">Shipping Method</label>
-                    <select class="form-select" name="shipping_method" id="shipping_method">
-                        <option value="">Select Method</option>
-                        <option value="Standard" <?php echo (($edit_invoice['shipping_method'] ?? '') == 'Standard') ? 'selected' : ''; ?>>Standard Delivery</option>
-                        <option value="Express" <?php echo (($edit_invoice['shipping_method'] ?? '') == 'Express') ? 'selected' : ''; ?>>Express Delivery</option>
-                        <option value="Same Day" <?php echo (($edit_invoice['shipping_method'] ?? '') == 'Same Day') ? 'selected' : ''; ?>>Same Day Delivery</option>
-                        <option value="Pickup" <?php echo (($edit_invoice['shipping_method'] ?? '') == 'Pickup') ? 'selected' : ''; ?>>Customer Pickup</option>
-                        <option value="Courier" <?php echo (($edit_invoice['shipping_method'] ?? '') == 'Courier') ? 'selected' : ''; ?>>Courier</option>
-                        <option value="Freight" <?php echo (($edit_invoice['shipping_method'] ?? '') == 'Freight') ? 'selected' : ''; ?>>Freight</option>
-                    </select>
-                </div>
-            </div>
-
-            <div class="row g-2 mt-2">
-                <div class="col-md-3">
-                    <label class="form-label">Delivery Date</label>
-                    <input type="date" class="form-control" name="delivery_date" id="delivery_date" value="<?php echo htmlspecialchars($edit_invoice['delivery_date'] ?? ''); ?>">
-                </div>
-                
-                <div class="col-md-2">
-                    <label class="form-label">Delivery Time</label>
-                    <input type="time" class="form-control" name="delivery_time" id="delivery_time" value="<?php echo htmlspecialchars($edit_invoice['delivery_time'] ?? ''); ?>">
-                </div>
-                
-                <div class="col-md-3">
-                    <label class="form-label">Tracking Number</label>
-                    <input type="text" class="form-control" name="tracking_number" id="tracking_number" placeholder="Tracking #" value="<?php echo htmlspecialchars($edit_invoice['tracking_number'] ?? ''); ?>">
-                </div>
-            </div>
-
-            <div class="row g-2 mt-2" id="shippingBreakdown" style="display: <?php echo ($edit_invoice['shipping_charges'] ?? 0) > 0 ? 'block' : 'none'; ?>;">
-                <div class="col-md-12">
-                    <div class="calc-box">
-                        <div class="small-muted">Shipping Breakdown</div>
-                        <div class="d-flex justify-content-between flex-wrap gap-2 mt-1">
-                            <span>Shipping Charges: <span id="shippingChargesDisplay">₹<?php echo money2($edit_invoice['shipping_charges'] ?? 0); ?></span></span>
-                            <span>CGST (<span id="shippingCgstRate"><?php echo ($edit_invoice['shipping_cgst'] ?? 0); ?></span>%): <span id="shippingCgstAmount">₹<?php echo money2($edit_invoice['shipping_cgst_amount'] ?? 0); ?></span></span>
-                            <span>SGST (<span id="shippingSgstRate"><?php echo ($edit_invoice['shipping_sgst'] ?? 0); ?></span>%): <span id="shippingSgstAmount">₹<?php echo money2($edit_invoice['shipping_sgst_amount'] ?? 0); ?></span></span>
-                            <span class="fw-bold">Total Shipping: <span id="shippingTotal">₹<?php echo money2($edit_invoice['shipping_total'] ?? 0); ?></span></span>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            <!-- Hidden field to store shipping address from customer table -->
+            <input type="hidden" name="shipping_address" id="shipping_address" value="">
         </div>
 
         <!-- Product Sale Section -->
@@ -2174,10 +2096,14 @@ if ($current_user_id == 0) {
                 $('#custEmail').text(c.email || '-');
                 $('#custGST').text(c.gst_number || '-');
                 $('#custAddress').text(c.address || '-');
+                // Auto-populate shipping address from customer's shipping_address field
+                document.getElementById('shipping_address').value = c.shipping_address || '';
             });
     });
     $('#customerSelect').on('select2:clear', function() {
         $('#customerDetails').hide();
+        // Clear shipping address when customer is cleared
+        document.getElementById('shipping_address').value = '';
     });
 
     <?php if ($edit_invoice && $edit_invoice['customer_id'] > 0): ?>
@@ -2194,6 +2120,8 @@ if ($current_user_id == 0) {
                     $('#custEmail').text(c.email || '-');
                     $('#custGST').text(c.gst_number || '-');
                     $('#custAddress').text(c.address || '-');
+                    // Auto-populate shipping address from customer's shipping_address field
+                    document.getElementById('shipping_address').value = c.shipping_address || '';
                 });
         }
     }, 500);
