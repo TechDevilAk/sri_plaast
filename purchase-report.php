@@ -35,6 +35,8 @@ $from_date = $_GET['from_date'] ?? date('Y-m-01'); // First day of current month
 $to_date = $_GET['to_date'] ?? date('Y-m-d');
 $supplier_id = isset($_GET['supplier_id']) ? intval($_GET['supplier_id']) : 0;
 $category_id = isset($_GET['category_id']) ? intval($_GET['category_id']) : 0;
+$product_id = isset($_GET['product_id']) ? intval($_GET['product_id']) : 0;
+$item_type = $_GET['item_type'] ?? 'all'; // all, category, product
 $payment_status = $_GET['payment_status'] ?? '';
 $gst_type = $_GET['gst_type'] ?? '';
 $group_by = $_GET['group_by'] ?? 'day'; // day, week, month
@@ -49,6 +51,7 @@ $date_condition = "DATE(p.purchase_date) BETWEEN '$from_date' AND '$to_date'";
 // --------------------------
 $suppliers = $conn->query("SELECT id, supplier_name FROM suppliers ORDER BY supplier_name");
 $categories = $conn->query("SELECT id, category_name FROM category ORDER BY category_name");
+$products = $conn->query("SELECT id, product_name, product_type, primary_unit FROM product ORDER BY product_name");
 
 // --------------------------
 // Summary Statistics
@@ -58,7 +61,8 @@ $summary_stats = [];
 // Overall summary
 $overall_sql = "SELECT 
     COUNT(DISTINCT p.id) as total_purchases,
-    COUNT(DISTINCT pi.id) as total_items,
+    COUNT(DISTINCT CASE WHEN pi.product_id IS NOT NULL THEN pi.id ELSE NULL END) as product_items,
+    COUNT(DISTINCT CASE WHEN pi.cat_id IS NOT NULL THEN pi.id ELSE NULL END) as category_items,
     COALESCE(SUM(p.total), 0) as total_amount,
     COALESCE(SUM(p.cgst_amount + p.sgst_amount), 0) as total_gst,
     COALESCE(AVG(p.total), 0) as avg_purchase_value,
@@ -71,6 +75,12 @@ WHERE $date_condition";
 
 if ($supplier_id > 0) {
     $overall_sql .= " AND p.supplier_id = $supplier_id";
+}
+
+if ($item_type === 'category') {
+    $overall_sql .= " AND p.purchase_type = 'category'";
+} elseif ($item_type === 'product') {
+    $overall_sql .= " AND p.purchase_type = 'product'";
 }
 
 $summary_stats['overall'] = $conn->query($overall_sql)->fetch_assoc();
@@ -95,6 +105,12 @@ if ($supplier_id > 0) {
     $status_sql .= " AND p.supplier_id = $supplier_id";
 }
 
+if ($item_type === 'category') {
+    $status_sql .= " AND p.purchase_type = 'category'";
+} elseif ($item_type === 'product') {
+    $status_sql .= " AND p.purchase_type = 'product'";
+}
+
 $summary_stats['status'] = $conn->query($status_sql)->fetch_assoc();
 
 // GST type breakdown
@@ -110,13 +126,36 @@ if ($supplier_id > 0) {
     $gst_type_sql .= " AND p.supplier_id = $supplier_id";
 }
 
+if ($item_type === 'category') {
+    $gst_type_sql .= " AND p.purchase_type = 'category'";
+} elseif ($item_type === 'product') {
+    $gst_type_sql .= " AND p.purchase_type = 'product'";
+}
+
 $summary_stats['gst_type'] = $conn->query($gst_type_sql)->fetch_assoc();
+
+// Purchase type breakdown
+$type_sql = "SELECT 
+    COUNT(CASE WHEN p.purchase_type = 'category' THEN 1 END) as category_count,
+    COUNT(CASE WHEN p.purchase_type = 'product' THEN 1 END) as product_count,
+    COALESCE(SUM(CASE WHEN p.purchase_type = 'category' THEN p.total END), 0) as category_amount,
+    COALESCE(SUM(CASE WHEN p.purchase_type = 'product' THEN p.total END), 0) as product_amount
+FROM purchase p
+WHERE $date_condition";
+
+if ($supplier_id > 0) {
+    $type_sql .= " AND p.supplier_id = $supplier_id";
+}
+
+$summary_stats['purchase_type'] = $conn->query($type_sql)->fetch_assoc();
 
 // Top suppliers
 $top_suppliers_sql = "SELECT 
     s.id,
     s.supplier_name,
     COUNT(p.id) as purchase_count,
+    COUNT(CASE WHEN p.purchase_type = 'category' THEN 1 END) as category_count,
+    COUNT(CASE WHEN p.purchase_type = 'product' THEN 1 END) as product_count,
     COALESCE(SUM(p.total), 0) as total_amount,
     COALESCE(AVG(p.total), 0) as avg_amount,
     COALESCE(SUM(pp.paid_amount), 0) as paid_amount
@@ -127,6 +166,12 @@ WHERE s.id IS NOT NULL";
 
 if ($supplier_id > 0) {
     $top_suppliers_sql .= " AND s.id = $supplier_id";
+}
+
+if ($item_type === 'category') {
+    $top_suppliers_sql .= " AND p.purchase_type = 'category'";
+} elseif ($item_type === 'product') {
+    $top_suppliers_sql .= " AND p.purchase_type = 'product'";
 }
 
 $top_suppliers_sql .= " GROUP BY s.id, s.supplier_name
@@ -145,7 +190,11 @@ if ($group_by === 'day') {
     $chart_sql = "SELECT 
         DATE(p.purchase_date) as date_label,
         COUNT(DISTINCT p.id) as purchase_count,
+        COUNT(CASE WHEN p.purchase_type = 'category' THEN 1 END) as category_count,
+        COUNT(CASE WHEN p.purchase_type = 'product' THEN 1 END) as product_count,
         COALESCE(SUM(p.total), 0) as total_amount,
+        COALESCE(SUM(CASE WHEN p.purchase_type = 'category' THEN p.total END), 0) as category_amount,
+        COALESCE(SUM(CASE WHEN p.purchase_type = 'product' THEN p.total END), 0) as product_amount,
         COALESCE(SUM(p.cgst_amount + p.sgst_amount), 0) as gst_amount,
         COALESCE(SUM(pp.paid_amount), 0) as paid_amount
     FROM purchase p
@@ -158,6 +207,16 @@ if ($group_by === 'day') {
     
     if ($category_id > 0) {
         $chart_sql .= " AND EXISTS (SELECT 1 FROM purchase_item pi WHERE pi.purchase_id = p.id AND pi.cat_id = $category_id)";
+    }
+    
+    if ($product_id > 0) {
+        $chart_sql .= " AND EXISTS (SELECT 1 FROM purchase_item pi WHERE pi.purchase_id = p.id AND pi.product_id = $product_id)";
+    }
+    
+    if ($item_type === 'category') {
+        $chart_sql .= " AND p.purchase_type = 'category'";
+    } elseif ($item_type === 'product') {
+        $chart_sql .= " AND p.purchase_type = 'product'";
     }
     
     $chart_sql .= " GROUP BY DATE(p.purchase_date)
@@ -168,7 +227,11 @@ if ($group_by === 'day') {
         CONCAT(YEAR(p.purchase_date), '-W', WEEK(p.purchase_date)) as date_label,
         MIN(p.purchase_date) as week_start,
         COUNT(DISTINCT p.id) as purchase_count,
+        COUNT(CASE WHEN p.purchase_type = 'category' THEN 1 END) as category_count,
+        COUNT(CASE WHEN p.purchase_type = 'product' THEN 1 END) as product_count,
         COALESCE(SUM(p.total), 0) as total_amount,
+        COALESCE(SUM(CASE WHEN p.purchase_type = 'category' THEN p.total END), 0) as category_amount,
+        COALESCE(SUM(CASE WHEN p.purchase_type = 'product' THEN p.total END), 0) as product_amount,
         COALESCE(SUM(p.cgst_amount + p.sgst_amount), 0) as gst_amount,
         COALESCE(SUM(pp.paid_amount), 0) as paid_amount
     FROM purchase p
@@ -181,6 +244,16 @@ if ($group_by === 'day') {
     
     if ($category_id > 0) {
         $chart_sql .= " AND EXISTS (SELECT 1 FROM purchase_item pi WHERE pi.purchase_id = p.id AND pi.cat_id = $category_id)";
+    }
+    
+    if ($product_id > 0) {
+        $chart_sql .= " AND EXISTS (SELECT 1 FROM purchase_item pi WHERE pi.purchase_id = p.id AND pi.product_id = $product_id)";
+    }
+    
+    if ($item_type === 'category') {
+        $chart_sql .= " AND p.purchase_type = 'category'";
+    } elseif ($item_type === 'product') {
+        $chart_sql .= " AND p.purchase_type = 'product'";
     }
     
     $chart_sql .= " GROUP BY YEAR(p.purchase_date), WEEK(p.purchase_date)
@@ -192,7 +265,11 @@ if ($group_by === 'day') {
         MONTH(p.purchase_date) as month_num,
         YEAR(p.purchase_date) as year_num,
         COUNT(DISTINCT p.id) as purchase_count,
+        COUNT(CASE WHEN p.purchase_type = 'category' THEN 1 END) as category_count,
+        COUNT(CASE WHEN p.purchase_type = 'product' THEN 1 END) as product_count,
         COALESCE(SUM(p.total), 0) as total_amount,
+        COALESCE(SUM(CASE WHEN p.purchase_type = 'category' THEN p.total END), 0) as category_amount,
+        COALESCE(SUM(CASE WHEN p.purchase_type = 'product' THEN p.total END), 0) as product_amount,
         COALESCE(SUM(p.cgst_amount + p.sgst_amount), 0) as gst_amount,
         COALESCE(SUM(pp.paid_amount), 0) as paid_amount
     FROM purchase p
@@ -205,6 +282,16 @@ if ($group_by === 'day') {
     
     if ($category_id > 0) {
         $chart_sql .= " AND EXISTS (SELECT 1 FROM purchase_item pi WHERE pi.purchase_id = p.id AND pi.cat_id = $category_id)";
+    }
+    
+    if ($product_id > 0) {
+        $chart_sql .= " AND EXISTS (SELECT 1 FROM purchase_item pi WHERE pi.purchase_id = p.id AND pi.product_id = $product_id)";
+    }
+    
+    if ($item_type === 'category') {
+        $chart_sql .= " AND p.purchase_type = 'category'";
+    } elseif ($item_type === 'product') {
+        $chart_sql .= " AND p.purchase_type = 'product'";
     }
     
     $chart_sql .= " GROUP BY YEAR(p.purchase_date), MONTH(p.purchase_date)
@@ -224,6 +311,70 @@ while ($row = $chart_result->fetch_assoc()) {
 }
 
 // --------------------------
+// Category-wise Purchase Summary
+// --------------------------
+$category_sql = "SELECT 
+    c.id,
+    c.category_name,
+    c.gram_value,
+    COUNT(DISTINCT pi.purchase_id) as purchase_count,
+    SUM(pi.qty) as total_pieces,
+    SUM(pi.sec_qty) as total_kg,
+    COALESCE(AVG(pi.purchase_price), 0) as avg_price_per_piece,
+    COALESCE(SUM(pi.total), 0) as total_amount,
+    COALESCE(SUM(pi.cgst_amount + pi.sgst_amount), 0) as total_gst
+FROM category c
+LEFT JOIN purchase_item pi ON c.id = pi.cat_id
+LEFT JOIN purchase p ON pi.purchase_id = p.id AND $date_condition AND p.purchase_type = 'category'
+WHERE 1=1";
+
+if ($category_id > 0) {
+    $category_sql .= " AND c.id = $category_id";
+}
+
+if ($supplier_id > 0) {
+    $category_sql .= " AND p.supplier_id = $supplier_id";
+}
+
+$category_sql .= " GROUP BY c.id, c.category_name, c.gram_value
+    HAVING purchase_count > 0
+    ORDER BY total_amount DESC";
+
+$category_summary = $conn->query($category_sql);
+
+// --------------------------
+// Product-wise Purchase Summary
+// --------------------------
+$product_sql = "SELECT 
+    pr.id,
+    pr.product_name,
+    pr.product_type,
+    pr.primary_unit,
+    COUNT(DISTINCT pi.purchase_id) as purchase_count,
+    SUM(pi.qty) as total_quantity,
+    COALESCE(AVG(pi.purchase_price), 0) as avg_price_per_unit,
+    COALESCE(SUM(pi.total), 0) as total_amount,
+    COALESCE(SUM(pi.cgst_amount + pi.sgst_amount), 0) as total_gst
+FROM product pr
+LEFT JOIN purchase_item pi ON pr.id = pi.product_id
+LEFT JOIN purchase p ON pi.purchase_id = p.id AND $date_condition AND p.purchase_type = 'product'
+WHERE 1=1";
+
+if ($product_id > 0) {
+    $product_sql .= " AND pr.id = $product_id";
+}
+
+if ($supplier_id > 0) {
+    $product_sql .= " AND p.supplier_id = $supplier_id";
+}
+
+$product_sql .= " GROUP BY pr.id, pr.product_name, pr.product_type, pr.primary_unit
+    HAVING purchase_count > 0
+    ORDER BY total_amount DESC";
+
+$product_summary = $conn->query($product_sql);
+
+// --------------------------
 // Detailed Purchase Data
 // --------------------------
 $detailed_sql = "SELECT 
@@ -235,9 +386,12 @@ $detailed_sql = "SELECT
     p.cgst_amount,
     p.sgst_amount,
     p.gst_type,
+    p.purchase_type,
     s.supplier_name,
     s.phone as supplier_phone,
     COUNT(DISTINCT pi.id) as item_count,
+    COUNT(DISTINCT CASE WHEN pi.cat_id IS NOT NULL THEN pi.id END) as category_item_count,
+    COUNT(DISTINCT CASE WHEN pi.product_id IS NOT NULL THEN pi.id END) as product_item_count,
     COALESCE(SUM(pp.paid_amount), 0) as paid_amount
 FROM purchase p
 LEFT JOIN suppliers s ON p.supplier_id = s.id
@@ -253,14 +407,20 @@ if ($category_id > 0) {
     $detailed_sql .= " AND EXISTS (SELECT 1 FROM purchase_item pi2 WHERE pi2.purchase_id = p.id AND pi2.cat_id = $category_id)";
 }
 
+if ($product_id > 0) {
+    $detailed_sql .= " AND EXISTS (SELECT 1 FROM purchase_item pi2 WHERE pi2.purchase_id = p.id AND pi2.product_id = $product_id)";
+}
+
+if ($item_type === 'category') {
+    $detailed_sql .= " AND p.purchase_type = 'category'";
+} elseif ($item_type === 'product') {
+    $detailed_sql .= " AND p.purchase_type = 'product'";
+}
+
 if (!empty($payment_status)) {
-    if ($payment_status === 'paid') {
-        $detailed_sql .= " HAVING paid_amount >= p.total";
-    } elseif ($payment_status === 'partial') {
-        $detailed_sql .= " HAVING paid_amount > 0 AND paid_amount < p.total";
-    } elseif ($payment_status === 'unpaid') {
-        $detailed_sql .= " HAVING paid_amount = 0";
-    }
+    $detailed_sql .= " HAVING " . ($payment_status === 'paid' ? "paid_amount >= p.total" : 
+                      ($payment_status === 'partial' ? "paid_amount > 0 AND paid_amount < p.total" : 
+                      "paid_amount = 0"));
 }
 
 if (!empty($gst_type)) {
@@ -273,34 +433,6 @@ $detailed_sql .= " GROUP BY p.id
 $detailed_purchases = $conn->query($detailed_sql);
 
 // --------------------------
-// Category-wise Purchase Summary
-// --------------------------
-$category_sql = "SELECT 
-    c.id,
-    c.category_name,
-    c.gram_value,
-    COUNT(DISTINCT pi.purchase_id) as purchase_count,
-    SUM(pi.qty) as total_pieces,
-    SUM(pi.sec_qty) as total_kg,
-    COALESCE(AVG(pi.purchase_price), 0) as avg_price_per_piece,
-    COALESCE(SUM(pi.total), 0) as total_amount,
-    COALESCE(SUM(pi.cgst_amount + pi.sgst_amount), 0) as total_gst
-FROM category c
-LEFT JOIN purchase_item pi ON c.id = pi.cat_id
-LEFT JOIN purchase p ON pi.purchase_id = p.id AND $date_condition
-WHERE 1=1";
-
-if ($category_id > 0) {
-    $category_sql .= " AND c.id = $category_id";
-}
-
-$category_sql .= " GROUP BY c.id, c.category_name, c.gram_value
-    HAVING purchase_count > 0
-    ORDER BY total_amount DESC";
-
-$category_summary = $conn->query($category_sql);
-
-// --------------------------
 // Handle Export
 // --------------------------
 if ($export === 'csv') {
@@ -310,7 +442,7 @@ if ($export === 'csv') {
     $output = fopen('php://output', 'w');
     
     // Headers
-    fputcsv($output, ['Date', 'Purchase #', 'Supplier', 'Items', 'Taxable', 'GST', 'Total', 'Paid', 'Balance', 'Status']);
+    fputcsv($output, ['Date', 'Purchase #', 'Type', 'Supplier', 'Items', 'Category Items', 'Product Items', 'Taxable', 'GST', 'Total', 'Paid', 'Balance', 'Status']);
     
     if ($detailed_purchases && $detailed_purchases->num_rows > 0) {
         $detailed_purchases->data_seek(0);
@@ -319,12 +451,16 @@ if ($export === 'csv') {
             $taxable = $row['purchase_total'] - $gst_total;
             $balance = $row['purchase_total'] - $row['paid_amount'];
             $status = $balance <= 0 ? 'Paid' : ($row['paid_amount'] > 0 ? 'Partial' : 'Unpaid');
+            $type_label = ($row['purchase_type'] == 'category') ? 'Category' : 'Product';
             
             fputcsv($output, [
                 date('Y-m-d', strtotime($row['purchase_date'])),
                 $row['purchase_no'],
+                $type_label,
                 $row['supplier_name'],
                 $row['item_count'],
+                $row['category_item_count'] ?? 0,
+                $row['product_item_count'] ?? 0,
                 money2($taxable),
                 money2($gst_total),
                 money2($row['purchase_total']),
@@ -362,6 +498,8 @@ if ($export === 'pdf') {
             --info: #3b82f6;
             --dark: #1e293b;
             --light: #f8fafc;
+            --category: #10b981;
+            --product: #3b82f6;
         }
         
         /* Report Container */
@@ -452,6 +590,8 @@ if ($export === 'pdf') {
         .stat-icon.warning { background: #fff4dd; color: var(--warning); }
         .stat-icon.danger { background: #fee2e2; color: var(--danger); }
         .stat-icon.info { background: #e1f0ff; color: var(--info); }
+        .stat-icon.category { background: #e3f9f2; color: var(--category); }
+        .stat-icon.product { background: #dbeafe; color: var(--product); }
         
         .stat-label {
             font-size: 13px;
@@ -589,6 +729,27 @@ if ($export === 'pdf') {
         .status-badge.warning { background: #fff4dd; color: #92400e; }
         .status-badge.danger { background: #fee2e2; color: #991b1b; }
         .status-badge.info { background: #e1f0ff; color: #1e40af; }
+        .status-badge.category { background: #e3f9f2; color: #10b981; }
+        .status-badge.product { background: #dbeafe; color: #3b82f6; }
+        
+        /* Purchase Type Badges */
+        .type-badge {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
+        }
+        
+        .type-badge.category {
+            background: #e3f9f2;
+            color: #10b981;
+        }
+        
+        .type-badge.product {
+            background: #dbeafe;
+            color: #3b82f6;
+        }
         
         /* Table Styles */
         .table-container {
@@ -687,6 +848,34 @@ if ($export === 'pdf') {
         .btn-export.pdf:hover { color: #ef4444; border-color: #ef4444; }
         .btn-export.print:hover { color: #6366f1; border-color: #6366f1; }
         
+        /* Item Type Selector */
+        .item-type-selector {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #f8fafc;
+            border-radius: 12px;
+        }
+        
+        .item-type-option {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .item-type-option input[type="radio"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+        
+        .item-type-option label {
+            cursor: pointer;
+            margin: 0;
+            font-weight: 500;
+        }
+        
         /* Progress Bar */
         .progress-bar-container {
             width: 100%;
@@ -736,6 +925,11 @@ if ($export === 'pdf') {
                 width: 100%;
                 justify-content: center;
             }
+            
+            .item-type-selector {
+                flex-direction: column;
+                gap: 8px;
+            }
         }
         
         @media print {
@@ -778,26 +972,27 @@ if ($export === 'pdf') {
                         <a href="?<?php echo $_SERVER['QUERY_STRING']; ?>&export=csv" class="btn-export csv">
                             <i class="bi bi-file-earmark-spreadsheet"></i> CSV
                         </a>
-                    
-                     
+                        <button onclick="printReport()" class="btn-export print">
+                            <i class="bi bi-printer"></i> Print
+                        </button>
                     </div>
                 </div>
 
                 <!-- Report Type Tabs -->
                 <div class="report-tabs">
-                    <a href="?report_type=summary&from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>" 
+                    <a href="?report_type=summary&from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>&item_type=<?php echo $item_type; ?>" 
                        class="report-tab <?php echo $report_type === 'summary' ? 'active' : ''; ?>">
                         <i class="bi bi-pie-chart"></i> Summary Report
                     </a>
-                    <a href="?report_type=detailed&from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>" 
+                    <a href="?report_type=detailed&from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>&item_type=<?php echo $item_type; ?>" 
                        class="report-tab <?php echo $report_type === 'detailed' ? 'active' : ''; ?>">
                         <i class="bi bi-table"></i> Detailed Report
                     </a>
-                    <a href="?report_type=monthly&from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>" 
+                    <a href="?report_type=monthly&from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>&item_type=<?php echo $item_type; ?>" 
                        class="report-tab <?php echo $report_type === 'monthly' ? 'active' : ''; ?>">
                         <i class="bi bi-calendar-month"></i> Monthly Analysis
                     </a>
-                    <a href="?report_type=supplier&from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>" 
+                    <a href="?report_type=supplier&from_date=<?php echo $from_date; ?>&to_date=<?php echo $to_date; ?>&item_type=<?php echo $item_type; ?>" 
                        class="report-tab <?php echo $report_type === 'supplier' ? 'active' : ''; ?>">
                         <i class="bi bi-truck"></i> Supplier Analysis
                     </a>
@@ -837,15 +1032,11 @@ if ($export === 'pdf') {
                             </div>
                             
                             <div class="filter-item">
-                                <span class="filter-label">Category</span>
-                                <select class="form-select" name="category_id" id="categorySelect">
-                                    <option value="">All Categories</option>
-                                    <?php while ($cat = $categories->fetch_assoc()): ?>
-                                        <option value="<?php echo $cat['id']; ?>" 
-                                            <?php echo $category_id == $cat['id'] ? 'selected' : ''; ?>>
-                                            <?php echo htmlspecialchars($cat['category_name']); ?>
-                                        </option>
-                                    <?php endwhile; ?>
+                                <span class="filter-label">Item Type</span>
+                                <select class="form-select" name="item_type">
+                                    <option value="all" <?php echo $item_type === 'all' ? 'selected' : ''; ?>>All Items</option>
+                                    <option value="category" <?php echo $item_type === 'category' ? 'selected' : ''; ?>>Categories (Preforms)</option>
+                                    <option value="product" <?php echo $item_type === 'product' ? 'selected' : ''; ?>>Products (Finished Goods)</option>
                                 </select>
                             </div>
                             
@@ -908,7 +1099,10 @@ if ($export === 'pdf') {
                         </div>
                         <div class="stat-label">Total Purchases</div>
                         <div class="stat-value"><?php echo number_format($summary_stats['overall']['total_purchases'] ?? 0); ?></div>
-                        <div class="stat-sub"><?php echo number_format($summary_stats['overall']['total_items'] ?? 0); ?> items purchased</div>
+                        <div class="stat-sub">
+                            <?php echo number_format($summary_stats['overall']['category_items'] ?? 0); ?> Categories | 
+                            <?php echo number_format($summary_stats['overall']['product_items'] ?? 0); ?> Products
+                        </div>
                     </div>
                     
                     <div class="stat-card">
@@ -947,8 +1141,24 @@ if ($export === 'pdf') {
                     </div>
                 </div>
 
-                <!-- Payment Status Summary -->
+                <!-- Purchase Type Stats -->
                 <div class="mini-stats-grid">
+                    <div class="mini-stat">
+                        <div class="mini-stat-label">Category Purchases</div>
+                        <div class="mini-stat-value"><?php echo $summary_stats['purchase_type']['category_count'] ?? 0; ?></div>
+                        <div class="mini-stat-trend trend-up">
+                            ₹<?php echo money2($summary_stats['purchase_type']['category_amount'] ?? 0); ?>
+                        </div>
+                    </div>
+                    
+                    <div class="mini-stat">
+                        <div class="mini-stat-label">Product Purchases</div>
+                        <div class="mini-stat-value"><?php echo $summary_stats['purchase_type']['product_count'] ?? 0; ?></div>
+                        <div class="mini-stat-trend trend-up">
+                            ₹<?php echo money2($summary_stats['purchase_type']['product_amount'] ?? 0); ?>
+                        </div>
+                    </div>
+                    
                     <div class="mini-stat">
                         <div class="mini-stat-label">Paid</div>
                         <div class="mini-stat-value"><?php echo $summary_stats['status']['paid_count'] ?? 0; ?></div>
@@ -978,14 +1188,6 @@ if ($export === 'pdf') {
                         <div class="mini-stat-value"><?php echo $summary_stats['gst_type']['exclusive_count'] ?? 0; ?></div>
                         <div class="mini-stat-trend">
                             ₹<?php echo money2($summary_stats['gst_type']['exclusive_amount'] ?? 0); ?>
-                        </div>
-                    </div>
-                    
-                    <div class="mini-stat">
-                        <div class="mini-stat-label">GST Inclusive</div>
-                        <div class="mini-stat-value"><?php echo $summary_stats['gst_type']['inclusive_count'] ?? 0; ?></div>
-                        <div class="mini-stat-trend">
-                            ₹<?php echo money2($summary_stats['gst_type']['inclusive_amount'] ?? 0); ?>
                         </div>
                     </div>
                 </div>
@@ -1028,7 +1230,9 @@ if ($export === 'pdf') {
                                     <tr>
                                         <th>#</th>
                                         <th>Supplier</th>
-                                        <th class="text-center">Purchases</th>
+                                        <th class="text-center">Total</th>
+                                        <th class="text-center">Category</th>
+                                        <th class="text-center">Product</th>
                                         <th class="text-end">Total Amount</th>
                                         <th class="text-end">Average</th>
                                         <th class="text-end">Paid</th>
@@ -1048,6 +1252,12 @@ if ($export === 'pdf') {
                                             <td><span class="badge bg-light text-dark">#<?php echo $rank++; ?></span></td>
                                             <td class="fw-semibold"><?php echo htmlspecialchars($sup['supplier_name']); ?></td>
                                             <td class="text-center"><?php echo $sup['purchase_count']; ?></td>
+                                            <td class="text-center">
+                                                <span class="type-badge category"><?php echo $sup['category_count']; ?></span>
+                                            </td>
+                                            <td class="text-center">
+                                                <span class="type-badge product"><?php echo $sup['product_count']; ?></span>
+                                            </td>
                                             <td class="text-end fw-bold">₹<?php echo money2($sup['total_amount']); ?></td>
                                             <td class="text-end">₹<?php echo money2($sup['avg_amount']); ?></td>
                                             <td class="text-end text-success">₹<?php echo money2($sup['paid_amount']); ?></td>
@@ -1071,10 +1281,10 @@ if ($export === 'pdf') {
                     <?php endif; ?>
 
                     <!-- Category Summary -->
-                    <?php if ($category_summary && $category_summary->num_rows > 0): ?>
+                    <?php if ($category_summary && $category_summary->num_rows > 0 && ($item_type === 'all' || $item_type === 'category')): ?>
                     <div class="summary-card">
                         <div class="summary-header">
-                            <h5><i class="bi bi-grid me-2" style="color: var(--info);"></i>Category-wise Purchase Summary</h5>
+                            <h5><i class="bi bi-layers me-2" style="color: var(--category);"></i>Category-wise Purchase Summary (Preforms)</h5>
                             <span class="summary-badge"><?php echo $category_summary->num_rows; ?> categories</span>
                         </div>
                         
@@ -1120,6 +1330,60 @@ if ($export === 'pdf') {
                     </div>
                     <?php endif; ?>
 
+                    <!-- Product Summary -->
+                    <?php if ($product_summary && $product_summary->num_rows > 0 && ($item_type === 'all' || $item_type === 'product')): ?>
+                    <div class="summary-card">
+                        <div class="summary-header">
+                            <h5><i class="bi bi-box-seam me-2" style="color: var(--product);"></i>Product-wise Purchase Summary (Finished Goods)</h5>
+                            <span class="summary-badge"><?php echo $product_summary->num_rows; ?> products</span>
+                        </div>
+                        
+                        <div class="table-container">
+                            <table class="report-table">
+                                <thead>
+                                    <tr>
+                                        <th>Product</th>
+                                        <th>Type</th>
+                                        <th class="text-center">Purchases</th>
+                                        <th class="text-end">Total Quantity</th>
+                                        <th class="text-end">Unit</th>
+                                        <th class="text-end">Avg Price/Unit</th>
+                                        <th class="text-end">Total Amount</th>
+                                        <th class="text-end">GST</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php 
+                                    $total_prod_amount = 0;
+                                    while ($prod = $product_summary->fetch_assoc()): 
+                                        $total_prod_amount += $prod['total_amount'];
+                                        $type_label = ($prod['product_type'] == 'direct') ? 'Direct Sale' : 'Converted Sale';
+                                        $type_class = ($prod['product_type'] == 'direct') ? 'product' : 'category';
+                                    ?>
+                                        <tr>
+                                            <td class="fw-semibold"><?php echo htmlspecialchars($prod['product_name']); ?></td>
+                                            <td><span class="type-badge <?php echo $type_class; ?>"><?php echo $type_label; ?></span></td>
+                                            <td class="text-center"><?php echo $prod['purchase_count']; ?></td>
+                                            <td class="text-end"><?php echo number_format($prod['total_quantity'], 2); ?></td>
+                                            <td class="text-end"><?php echo htmlspecialchars($prod['primary_unit']); ?></td>
+                                            <td class="text-end">₹<?php echo money2($prod['avg_price_per_unit']); ?></td>
+                                            <td class="text-end fw-bold">₹<?php echo money2($prod['total_amount']); ?></td>
+                                            <td class="text-end">₹<?php echo money2($prod['total_gst']); ?></td>
+                                        </tr>
+                                    <?php endwhile; ?>
+                                </tbody>
+                                <tfoot>
+                                    <tr>
+                                        <th colspan="6" class="text-end">Total:</th>
+                                        <th class="text-end">₹<?php echo money2($total_prod_amount); ?></th>
+                                        <th class="text-end">-</th>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                    </div>
+                    <?php endif; ?>
+
                 <?php elseif ($report_type === 'detailed' || $report_type === 'supplier'): ?>
 
                     <!-- Detailed Purchase List -->
@@ -1140,6 +1404,7 @@ if ($export === 'pdf') {
                                     <tr>
                                         <th>Date</th>
                                         <th>Purchase #</th>
+                                        <th>Type</th>
                                         <th>Supplier</th>
                                         <th class="text-center">Items</th>
                                         <th class="text-end">Taxable</th>
@@ -1161,17 +1426,28 @@ if ($export === 'pdf') {
                                             $balance = $row['purchase_total'] - $row['paid_amount'];
                                             $status = $balance <= 0 ? 'success' : ($row['paid_amount'] > 0 ? 'warning' : 'danger');
                                             $status_text = $balance <= 0 ? 'Paid' : ($row['paid_amount'] > 0 ? 'Partial' : 'Unpaid');
+                                            $type_label = ($row['purchase_type'] == 'category') ? 'Category' : 'Product';
+                                            $type_class = ($row['purchase_type'] == 'category') ? 'category' : 'product';
                                     ?>
                                         <tr>
                                             <td><?php echo date('d/m/Y', strtotime($row['purchase_date'])); ?></td>
                                             <td class="fw-semibold"><?php echo htmlspecialchars($row['purchase_no']); ?></td>
+                                            <td><span class="type-badge <?php echo $type_class; ?>"><?php echo $type_label; ?></span></td>
                                             <td>
                                                 <?php echo htmlspecialchars($row['supplier_name']); ?>
                                                 <?php if (!empty($row['gst_type'])): ?>
                                                     <br><small class="text-muted">(<?php echo ucfirst($row['gst_type']); ?>)</small>
                                                 <?php endif; ?>
                                             </td>
-                                            <td class="text-center"><?php echo $row['item_count']; ?></td>
+                                            <td class="text-center">
+                                                <?php echo $row['item_count']; ?>
+                                                <?php if ($row['category_item_count'] > 0): ?>
+                                                    <br><small class="text-success">C:<?php echo $row['category_item_count']; ?></small>
+                                                <?php endif; ?>
+                                                <?php if ($row['product_item_count'] > 0): ?>
+                                                    <small class="text-primary">P:<?php echo $row['product_item_count']; ?></small>
+                                                <?php endif; ?>
+                                            </td>
                                             <td class="text-end">₹<?php echo money2($taxable); ?></td>
                                             <td class="text-end">₹<?php echo money2($gst_total); ?></td>
                                             <td class="text-end fw-bold">₹<?php echo money2($row['purchase_total']); ?></td>
@@ -1195,7 +1471,7 @@ if ($export === 'pdf') {
                                     else: 
                                     ?>
                                         <tr>
-                                            <td colspan="11" class="text-center py-4 text-muted">
+                                            <td colspan="12" class="text-center py-4 text-muted">
                                                 No purchase records found for the selected criteria
                                             </td>
                                         </tr>
@@ -1220,12 +1496,14 @@ if ($export === 'pdf') {
                                     <thead>
                                         <tr>
                                             <th>Month</th>
-                                            <th class="text-center">Purchases</th>
+                                            <th class="text-center">Total</th>
+                                            <th class="text-center">Category</th>
+                                            <th class="text-center">Product</th>
+                                            <th class="text-end">Category Amount</th>
+                                            <th class="text-end">Product Amount</th>
                                             <th class="text-end">Total Amount</th>
                                             <th class="text-end">GST</th>
-                                            <th class="text-end">Average</th>
                                             <th class="text-end">Paid</th>
-                                            <th class="text-end">% of Total</th>
                                             <th>Trend</th>
                                         </tr>
                                     </thead>
@@ -1233,10 +1511,6 @@ if ($export === 'pdf') {
                                         <?php 
                                         $prev_amount = 0;
                                         foreach ($chart_data as $index => $data): 
-                                            $percentage = $summary_stats['overall']['total_amount'] > 0 
-                                                ? ($data['total_amount'] / $summary_stats['overall']['total_amount'] * 100) 
-                                                : 0;
-                                            
                                             $trend = $prev_amount > 0 ? (($data['total_amount'] - $prev_amount) / $prev_amount * 100) : 0;
                                             $trend_class = $trend > 0 ? 'trend-up' : ($trend < 0 ? 'trend-down' : '');
                                             $trend_icon = $trend > 0 ? 'bi-arrow-up' : ($trend < 0 ? 'bi-arrow-down' : 'bi-dash');
@@ -1244,11 +1518,17 @@ if ($export === 'pdf') {
                                             <tr>
                                                 <td class="fw-semibold"><?php echo $data['display_label']; ?></td>
                                                 <td class="text-center"><?php echo $data['purchase_count']; ?></td>
+                                                <td class="text-center">
+                                                    <span class="type-badge category"><?php echo $data['category_count']; ?></span>
+                                                </td>
+                                                <td class="text-center">
+                                                    <span class="type-badge product"><?php echo $data['product_count']; ?></span>
+                                                </td>
+                                                <td class="text-end text-success">₹<?php echo money2($data['category_amount']); ?></td>
+                                                <td class="text-end text-primary">₹<?php echo money2($data['product_amount']); ?></td>
                                                 <td class="text-end fw-bold">₹<?php echo money2($data['total_amount']); ?></td>
                                                 <td class="text-end">₹<?php echo money2($data['gst_amount']); ?></td>
-                                                <td class="text-end">₹<?php echo money2($data['total_amount'] / max($data['purchase_count'], 1)); ?></td>
                                                 <td class="text-end">₹<?php echo money2($data['paid_amount']); ?></td>
-                                                <td class="text-end"><?php echo number_format($percentage, 1); ?>%</td>
                                                 <td>
                                                     <span class="<?php echo $trend_class; ?>">
                                                         <i class="bi <?php echo $trend_icon; ?>"></i>
@@ -1273,6 +1553,9 @@ if ($export === 'pdf') {
                     <i class="bi bi-calendar-range me-1"></i>
                     Report Period: <?php echo date('d M Y', strtotime($from_date)); ?> to <?php echo date('d M Y', strtotime($to_date)); ?>
                     | Generated on: <?php echo date('d M Y, h:i A'); ?>
+                    <?php if ($item_type !== 'all'): ?>
+                        | Filter: <?php echo $item_type === 'category' ? 'Category Purchases Only' : 'Product Purchases Only'; ?>
+                    <?php endif; ?>
                 </div>
 
             </div>
@@ -1290,7 +1573,7 @@ if ($export === 'pdf') {
 <script>
 $(document).ready(function() {
     // Initialize Select2
-    $('#supplierSelect, #categorySelect').select2({
+    $('#supplierSelect, #categorySelect, #productSelect').select2({
         placeholder: 'Select option',
         allowClear: true,
         width: '100%'
@@ -1318,10 +1601,17 @@ $(document).ready(function() {
     $('#dateRange').on('apply.daterangepicker', function(ev, picker) {
         $('#from_date').val(picker.startDate.format('YYYY-MM-DD'));
         $('#to_date').val(picker.endDate.format('YYYY-MM-DD'));
+        $('#reportForm').submit();
+    });
+    
+    $('#dateRange').on('cancel.daterangepicker', function(ev, picker) {
+        $('#from_date').val('');
+        $('#to_date').val('');
+        $('#reportForm').submit();
     });
     
     // Auto-submit on filter change
-    $('#supplierSelect, #categorySelect, select[name="payment_status"], select[name="gst_type"], select[name="group_by"]').on('change', function() {
+    $('#supplierSelect, #categorySelect, #productSelect, select[name="item_type"], select[name="payment_status"], select[name="gst_type"], select[name="group_by"]').on('change', function() {
         $('#reportForm').submit();
     });
 });
@@ -1337,8 +1627,9 @@ function createChart() {
     const chartType = document.getElementById('chartType').value;
     
     const labels = <?php echo json_encode(array_column($chart_data, 'display_label')); ?>;
-    const purchaseCounts = <?php echo json_encode(array_column($chart_data, 'purchase_count')); ?>;
     const totalAmounts = <?php echo json_encode(array_map(function($val) { return (float)$val; }, array_column($chart_data, 'total_amount'))); ?>;
+    const categoryAmounts = <?php echo json_encode(array_map(function($val) { return (float)$val; }, array_column($chart_data, 'category_amount'))); ?>;
+    const productAmounts = <?php echo json_encode(array_map(function($val) { return (float)$val; }, array_column($chart_data, 'product_amount'))); ?>;
     const gstAmounts = <?php echo json_encode(array_map(function($val) { return (float)$val; }, array_column($chart_data, 'gst_amount'))); ?>;
     const paidAmounts = <?php echo json_encode(array_map(function($val) { return (float)$val; }, array_column($chart_data, 'paid_amount'))); ?>;
     
@@ -1363,10 +1654,19 @@ function createChart() {
     } else {
         datasets = [
             {
-                label: 'Purchase Amount (₹)',
-                data: totalAmounts,
-                backgroundColor: 'rgba(67, 97, 238, 0.5)',
-                borderColor: '#4361ee',
+                label: 'Category Purchases (₹)',
+                data: categoryAmounts,
+                backgroundColor: 'rgba(16, 185, 129, 0.5)',
+                borderColor: '#10b981',
+                borderWidth: 2,
+                tension: 0.4,
+                yAxisID: 'y'
+            },
+            {
+                label: 'Product Purchases (₹)',
+                data: productAmounts,
+                backgroundColor: 'rgba(59, 130, 246, 0.5)',
+                borderColor: '#3b82f6',
                 borderWidth: 2,
                 tension: 0.4,
                 yAxisID: 'y'
@@ -1383,7 +1683,7 @@ function createChart() {
             {
                 label: 'Paid Amount (₹)',
                 data: paidAmounts,
-                backgroundColor: 'rgba(16, 185, 129, 0.5)',
+                backgroundColor: 'rgba(16, 185, 129, 0.3)',
                 borderColor: '#10b981',
                 borderWidth: 2,
                 tension: 0.4,
@@ -1408,6 +1708,21 @@ function createChart() {
                 title: {
                     display: true,
                     text: 'Purchase Analysis by <?php echo ucfirst($group_by); ?>'
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            let label = context.dataset.label || '';
+                            if (label) {
+                                label += ': ';
+                            }
+                            label += '₹' + context.parsed.y.toLocaleString(undefined, {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2
+                            });
+                            return label;
+                        }
+                    }
                 }
             },
             scales: chartType !== 'pie' ? {
@@ -1441,10 +1756,6 @@ function printReport() {
 // Export functions
 function exportCSV() {
     window.location.href = '?<?php echo $_SERVER['QUERY_STRING']; ?>&export=csv';
-}
-
-function exportPDF() {
-    window.location.href = '?<?php echo $_SERVER['QUERY_STRING']; ?>&export=pdf';
 }
 </script>
 </body>

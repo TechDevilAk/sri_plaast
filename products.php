@@ -21,6 +21,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $error = 'You do not have permission to add products.';
     } else {
         $product_name = trim($_POST['product_name'] ?? '');
+        $product_type = isset($_POST['product_type']) ? trim($_POST['product_type']) : 'direct';
         
         // Handle HSN code and GST
         if (isset($_POST['hsn_code_type'])) {
@@ -88,14 +89,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             if ($check->num_rows > 0) {
                 $error = 'Product already exists. Please choose a different name.';
             } else {
-                $stmt = $conn->prepare("INSERT INTO product (product_name, hsn_code, primary_qty, primary_unit, sec_qty, sec_unit) VALUES (?, ?, ?, ?, ?, ?)");
-                $stmt->bind_param("ssdsds", $product_name, $hsn_code, $primary_qty, $primary_unit, $sec_qty, $sec_unit);
+                $stmt = $conn->prepare("INSERT INTO product (product_name, product_type, hsn_code, primary_qty, primary_unit, sec_qty, sec_unit) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                $stmt->bind_param("sssdsds", $product_name, $product_type, $hsn_code, $primary_qty, $primary_unit, $sec_qty, $sec_unit);
                 
                 if ($stmt->execute()) {
                     $product_id = $stmt->insert_id;
                     
                     // Log activity
-                    $log_desc = "Created new product: " . $product_name . " (HSN: " . ($hsn_code ?: 'N/A') . ")";
+                    $type_label = ($product_type == 'direct') ? 'Direct Sale' : 'Converted Sale';
+                    $log_desc = "Created new product: " . $product_name . " (Type: {$type_label}, HSN: " . ($hsn_code ?: 'N/A') . ")";
                     $log_query = "INSERT INTO activity_log (user_id, action, description) VALUES (?, 'create', ?)";
                     $log_stmt = $conn->prepare($log_query);
                     $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
@@ -120,6 +122,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     } else {
         $editId = intval($_POST['product_id']);
         $product_name = trim($_POST['product_name'] ?? '');
+        $product_type = isset($_POST['product_type']) ? trim($_POST['product_type']) : 'direct';
         
         // Handle HSN code and GST
         if (isset($_POST['hsn_code_type'])) {
@@ -187,12 +190,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             if ($check->num_rows > 0) {
                 $error = 'Product name already exists. Please choose a different name.';
             } else {
-                $stmt = $conn->prepare("UPDATE product SET product_name=?, hsn_code=?, primary_qty=?, primary_unit=?, sec_qty=?, sec_unit=? WHERE id=?");
-                $stmt->bind_param("ssdsdsi", $product_name, $hsn_code, $primary_qty, $primary_unit, $sec_qty, $sec_unit, $editId);
+                $stmt = $conn->prepare("UPDATE product SET product_name=?, product_type=?, hsn_code=?, primary_qty=?, primary_unit=?, sec_qty=?, sec_unit=? WHERE id=?");
+                $stmt->bind_param("sssdsdsi", $product_name, $product_type, $hsn_code, $primary_qty, $primary_unit, $sec_qty, $sec_unit, $editId);
                 
                 if ($stmt->execute()) {
                     // Log activity
-                    $log_desc = "Updated product: " . $product_name . " (HSN: " . ($hsn_code ?: 'N/A') . ")";
+                    $type_label = ($product_type == 'direct') ? 'Direct Sale' : 'Converted Sale';
+                    $log_desc = "Updated product: " . $product_name . " (Type: {$type_label}, HSN: " . ($hsn_code ?: 'N/A') . ")";
                     $log_query = "INSERT INTO activity_log (user_id, action, description) VALUES (?, 'update', ?)";
                     $log_stmt = $conn->prepare($log_query);
                     $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
@@ -227,20 +231,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $error = "Cannot delete product. It has been used in invoices.";
         } else {
             // Get product name for logging
-            $prod_query = $conn->prepare("SELECT product_name, hsn_code FROM product WHERE id = ?");
+            $prod_query = $conn->prepare("SELECT product_name, product_type, hsn_code FROM product WHERE id = ?");
             $prod_query->bind_param("i", $deleteId);
             $prod_query->execute();
             $prod_result = $prod_query->get_result();
             $prod_data = $prod_result->fetch_assoc();
             $product_name = $prod_data['product_name'] ?? 'Unknown';
+            $product_type = $prod_data['product_type'] ?? 'direct';
             $hsn_code = $prod_data['hsn_code'] ?? '';
+            $type_label = ($product_type == 'direct') ? 'Direct Sale' : 'Converted Sale';
             
             $stmt = $conn->prepare("DELETE FROM product WHERE id = ?");
             $stmt->bind_param("i", $deleteId);
             
             if ($stmt->execute()) {
                 // Log activity
-                $log_desc = "Deleted product: " . $product_name . " (HSN: " . ($hsn_code ?: 'N/A') . ")";
+                $log_desc = "Deleted product: " . $product_name . " (Type: {$type_label}, HSN: " . ($hsn_code ?: 'N/A') . ")";
                 $log_query = "INSERT INTO activity_log (user_id, action, description) VALUES (?, 'delete', ?)";
                 $log_stmt = $conn->prepare($log_query);
                 $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
@@ -266,6 +272,8 @@ $products = $conn->query($sql);
 
 // Stats
 $totalCount = $conn->query("SELECT COUNT(*) as cnt FROM product")->fetch_assoc()['cnt'];
+$directCount = $conn->query("SELECT COUNT(*) as cnt FROM product WHERE product_type = 'direct'")->fetch_assoc()['cnt'];
+$convertedCount = $conn->query("SELECT COUNT(*) as cnt FROM product WHERE product_type = 'converted'")->fetch_assoc()['cnt'];
 $withSecondaryCount = $conn->query("SELECT COUNT(*) as cnt FROM product WHERE sec_qty > 0 AND sec_unit != ''")->fetch_assoc()['cnt'];
 $withoutSecondaryCount = $totalCount - $withSecondaryCount;
 $withHSNCount = $conn->query("SELECT COUNT(*) as cnt FROM product WHERE hsn_code IS NOT NULL AND hsn_code != ''")->fetch_assoc()['cnt'];
@@ -311,6 +319,24 @@ function isStandardUnit($unit, $standard_units) {
         .product-unit-badge.secondary {
             background: #f0fdf4;
             color: #16a34a;
+        }
+        
+        .product-type-badge {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
+        }
+        
+        .product-type-badge.direct {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+        
+        .product-type-badge.converted {
+            background: #fed7aa;
+            color: #9a3412;
         }
         
         .hsn-badge {
@@ -496,6 +522,59 @@ function isStandardUnit($unit, $standard_units) {
             background: white;
             border-radius: 6px;
         }
+        
+        .product-type-selector {
+            background: #f8fafc;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+        
+        .product-type-option {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+        
+        .product-type-option:last-child {
+            margin-bottom: 0;
+        }
+        
+        .product-type-option input[type="radio"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+        
+        .product-type-option label {
+            cursor: pointer;
+            margin: 0;
+            font-weight: 500;
+        }
+        
+        .product-type-desc {
+            font-size: 11px;
+            color: #64748b;
+            margin-left: 28px;
+            margin-top: -4px;
+            margin-bottom: 8px;
+        }
+        
+        .product-type-badge-filter {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .product-type-badge-filter:hover {
+            opacity: 0.8;
+            transform: scale(1.02);
+        }
+        
+        .filter-active {
+            border: 2px solid #3b82f6;
+            box-shadow: 0 0 0 1px #3b82f6;
+        }
     </style>
 </head>
 <body>
@@ -512,7 +591,7 @@ function isStandardUnit($unit, $standard_units) {
             <div class="d-flex align-items-center justify-content-between flex-wrap gap-3 mb-4">
                 <div>
                     <h4 class="fw-bold mb-1" style="color: var(--text-primary);">Products Management</h4>
-                    <p style="font-size: 14px; color: var(--text-muted); margin: 0;">Manage products, units, and HSN codes</p>
+                    <p style="font-size: 14px; color: var(--text-muted); margin: 0;">Manage products, units, HSN codes, and product types</p>
                 </div>
                 <div class="d-flex gap-2">
                     <?php if ($is_admin): ?>
@@ -546,7 +625,7 @@ function isStandardUnit($unit, $standard_units) {
 
             <!-- Stats Cards -->
             <div class="row g-3 mb-4">
-                <div class="col-sm-6 col-lg-3">
+                <div class="col-sm-6 col-lg-2">
                     <div class="stat-card" data-testid="stat-total">
                         <div class="d-flex align-items-center gap-3">
                             <div class="stat-icon blue">
@@ -559,10 +638,36 @@ function isStandardUnit($unit, $standard_units) {
                         </div>
                     </div>
                 </div>
-                <div class="col-sm-6 col-lg-3">
-                    <div class="stat-card" data-testid="stat-with-secondary">
+                <div class="col-sm-6 col-lg-2">
+                    <div class="stat-card stat-direct-clickable" data-filter-type="direct" style="cursor: pointer;" data-testid="stat-direct">
                         <div class="d-flex align-items-center gap-3">
                             <div class="stat-icon green">
+                                <i class="bi bi-cart"></i>
+                            </div>
+                            <div class="stat-info">
+                                <div class="stat-label">Direct Sale</div>
+                                <div class="stat-value" data-testid="stat-value-direct"><?php echo $directCount; ?></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-sm-6 col-lg-2">
+                    <div class="stat-card stat-converted-clickable" data-filter-type="converted" style="cursor: pointer;" data-testid="stat-converted">
+                        <div class="d-flex align-items-center gap-3">
+                            <div class="stat-icon orange">
+                                <i class="bi bi-arrow-repeat"></i>
+                            </div>
+                            <div class="stat-info">
+                                <div class="stat-label">Converted Sale</div>
+                                <div class="stat-value" data-testid="stat-value-converted"><?php echo $convertedCount; ?></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-sm-6 col-lg-2">
+                    <div class="stat-card" data-testid="stat-with-secondary">
+                        <div class="d-flex align-items-center gap-3">
+                            <div class="stat-icon purple">
                                 <i class="bi bi-layers"></i>
                             </div>
                             <div class="stat-info">
@@ -572,10 +677,10 @@ function isStandardUnit($unit, $standard_units) {
                         </div>
                     </div>
                 </div>
-                <div class="col-sm-6 col-lg-3">
+                <div class="col-sm-6 col-lg-2">
                     <div class="stat-card" data-testid="stat-with-hsn">
                         <div class="d-flex align-items-center gap-3">
-                            <div class="stat-icon purple">
+                            <div class="stat-icon teal">
                                 <i class="bi bi-upc-scan"></i>
                             </div>
                             <div class="stat-info">
@@ -585,10 +690,10 @@ function isStandardUnit($unit, $standard_units) {
                         </div>
                     </div>
                 </div>
-                <div class="col-sm-6 col-lg-3">
+                <div class="col-sm-6 col-lg-2">
                     <div class="stat-card" data-testid="stat-invoices">
                         <div class="d-flex align-items-center gap-3">
-                            <div class="stat-icon orange">
+                            <div class="stat-icon red">
                                 <i class="bi bi-receipt"></i>
                             </div>
                             <div class="stat-info">
@@ -600,47 +705,25 @@ function isStandardUnit($unit, $standard_units) {
                 </div>
             </div>
 
-            <!-- Stats Row 2 - Mini Cards -->
+            <!-- Product Type Filter Buttons -->
             <div class="row g-3 mb-4">
-                <div class="col-md-4">
-                    <div class="stats-mini-card">
-                        <div class="d-flex justify-content-between align-items-center">
-                            <div>
-                                <div class="stats-mini-value"><?php echo $commonUnit['primary_unit'] ?? 'N/A'; ?></div>
-                                <div class="stats-mini-label">Most Common Unit</div>
-                            </div>
-                            <div class="text-end">
-                                <div class="stats-mini-value"><?php echo $commonUnit['cnt'] ?? 0; ?></div>
-                                <div class="stats-mini-label">Products</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="stats-mini-card">
-                        <div class="d-flex justify-content-between align-items-center">
-                            <div>
-                                <div class="stats-mini-value"><?php echo $commonHSN['hsn_code'] ?? 'N/A'; ?></div>
-                                <div class="stats-mini-label">Most Common HSN</div>
-                            </div>
-                            <div class="text-end">
-                                <div class="stats-mini-value"><?php echo $commonHSN['cnt'] ?? 0; ?></div>
-                                <div class="stats-mini-label">Products</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="stats-mini-card">
-                        <div class="d-flex justify-content-between align-items-center">
-                            <div>
-                                <div class="stats-mini-value"><?php echo $totalCount > 0 ? round(($withHSNCount/$totalCount)*100, 1) : 0; ?>%</div>
-                                <div class="stats-mini-label">Have HSN Code</div>
-                            </div>
-                            <div>
-                                <div class="progress" style="width: 150px; height: 8px;">
-                                    <div class="progress-bar bg-success" style="width: <?php echo $totalCount > 0 ? ($withHSNCount/$totalCount)*100 : 0; ?>%"></div>
-                                </div>
+                <div class="col-12">
+                    <div class="dashboard-card p-3">
+                        <div class="d-flex align-items-center gap-3 flex-wrap">
+                            <span class="fw-semibold" style="color: var(--text-primary);">Filter by Product Type:</span>
+                            <button class="btn btn-sm btn-outline-primary filter-btn active" data-filter="all">
+                                <i class="bi bi-grid-3x3-gap-fill me-1"></i> All Products
+                            </button>
+                            <button class="btn btn-sm btn-outline-primary filter-btn" data-filter="direct">
+                                <i class="bi bi-cart me-1"></i> Direct Sale
+                            </button>
+                            <button class="btn btn-sm btn-outline-primary filter-btn" data-filter="converted">
+                                <i class="bi bi-arrow-repeat me-1"></i> Converted Sale
+                            </button>
+                            <div class="ms-auto">
+                                <span class="text-muted" style="font-size: 12px;">
+                                    <i class="bi bi-info-circle"></i> Click on stats cards above to filter
+                                </span>
                             </div>
                         </div>
                     </div>
@@ -652,9 +735,10 @@ function isStandardUnit($unit, $standard_units) {
                 <div class="desktop-table" style="overflow-x: auto;">
                     <table class="table-custom" id="productsTable">
                         <thead>
-                            <tr>
+                             <tr>
                                 <th>#</th>
                                 <th>Product Name</th>
+                                <th>Type</th>
                                 <th>HSN Code</th>
                                 <th>GST</th>
                                 <th>Primary Unit</th>
@@ -665,7 +749,7 @@ function isStandardUnit($unit, $standard_units) {
                                 <?php if ($is_admin): ?>
                                     <th style="text-align: center;">Actions</th>
                                 <?php endif; ?>
-                            </tr>
+                              </tr>
                         </thead>
                         <tbody>
                             <?php if ($products && $products->num_rows > 0): ?>
@@ -678,10 +762,19 @@ function isStandardUnit($unit, $standard_units) {
                                         $example .= ' = ' . number_format($product['sec_qty'], 0) . ' ' . $product['sec_unit'];
                                     }
                                     $total_gst = ($product['cgst'] ?? 0) + ($product['sgst'] ?? 0);
+                                    $type_class = ($product['product_type'] == 'direct') ? 'direct' : 'converted';
+                                    $type_label = ($product['product_type'] == 'direct') ? 'Direct Sale' : 'Converted Sale';
+                                    $type_icon = ($product['product_type'] == 'direct') ? 'bi-cart' : 'bi-arrow-repeat';
                                 ?>
-                                    <tr data-testid="row-product-<?php echo $product['id']; ?>">
+                                    <tr data-product-type="<?php echo $product['product_type']; ?>" data-testid="row-product-<?php echo $product['id']; ?>">
                                         <td><span class="order-id">#<?php echo $product['id']; ?></span></td>
                                         <td class="fw-semibold"><?php echo htmlspecialchars($product['product_name']); ?></td>
+                                        <td>
+                                            <span class="product-type-badge <?php echo $type_class; ?>">
+                                                <i class="bi <?php echo $type_icon; ?> me-1"></i>
+                                                <?php echo $type_label; ?>
+                                            </span>
+                                        </td>
                                         <td>
                                             <?php if (!empty($product['hsn_code'])): ?>
                                                 <span class="hsn-badge">
@@ -755,13 +848,13 @@ function isStandardUnit($unit, $standard_units) {
                                                         </button>
                                                     </form>
                                                 </div>
-                                            </td>
+                                             </td>
                                         <?php endif; ?>
                                     </tr>
 
                                     <!-- Edit Product Modal -->
                                     <div class="modal fade" id="editProductModal<?php echo $product['id']; ?>" tabindex="-1" aria-hidden="true">
-                                        <div class="modal-dialog">
+                                        <div class="modal-dialog modal-lg">
                                             <div class="modal-content">
                                                 <form method="POST" action="products.php" data-testid="form-edit-product-<?php echo $product['id']; ?>">
                                                     <input type="hidden" name="action" value="edit_product">
@@ -774,6 +867,25 @@ function isStandardUnit($unit, $standard_units) {
                                                         <div class="mb-3">
                                                             <label class="form-label">Product Name <span class="text-danger">*</span></label>
                                                             <input type="text" name="product_name" class="form-control" value="<?php echo htmlspecialchars($product['product_name']); ?>" required data-testid="input-edit-name-<?php echo $product['id']; ?>">
+                                                        </div>
+                                                        
+                                                        <!-- Product Type Selection -->
+                                                        <div class="product-type-selector">
+                                                            <label class="form-label fw-semibold mb-2">Product Type <span class="text-danger">*</span></label>
+                                                            <div class="product-type-option">
+                                                                <input type="radio" name="product_type" id="edit_direct_<?php echo $product['id']; ?>" value="direct" <?php echo ($product['product_type'] == 'direct') ? 'checked' : ''; ?>>
+                                                                <label for="edit_direct_<?php echo $product['id']; ?>">Direct Sale Product</label>
+                                                            </div>
+                                                            <div class="product-type-desc">
+                                                                <i class="bi bi-info-circle"></i> Products sold directly to customers
+                                                            </div>
+                                                            <div class="product-type-option">
+                                                                <input type="radio" name="product_type" id="edit_converted_<?php echo $product['id']; ?>" value="converted" <?php echo ($product['product_type'] == 'converted') ? 'checked' : ''; ?>>
+                                                                <label for="edit_converted_<?php echo $product['id']; ?>">Converted Sale Product</label>
+                                                            </div>
+                                                            <div class="product-type-desc">
+                                                                <i class="bi bi-info-circle"></i> Products that are converted from raw materials or other products
+                                                            </div>
                                                         </div>
                                                         
                                                         <div class="hsn-type-selector">
@@ -943,13 +1055,26 @@ function isStandardUnit($unit, $standard_units) {
                                 $example .= ' = ' . number_format($mProduct['sec_qty'], 0) . ' ' . $mProduct['sec_unit'];
                             }
                             $total_gst = ($mProduct['cgst'] ?? 0) + ($mProduct['sgst'] ?? 0);
+                            $type_class = ($mProduct['product_type'] == 'direct') ? 'direct' : 'converted';
+                            $type_label = ($mProduct['product_type'] == 'direct') ? 'Direct Sale' : 'Converted Sale';
+                            $type_icon = ($mProduct['product_type'] == 'direct') ? 'bi-cart' : 'bi-arrow-repeat';
                         ?>
-                            <div class="mobile-card" data-testid="mobile-card-product-<?php echo $mProduct['id']; ?>">
+                            <div class="mobile-card" data-product-type="<?php echo $mProduct['product_type']; ?>" data-testid="mobile-card-product-<?php echo $mProduct['id']; ?>">
                                 <div class="mobile-card-header">
                                     <div>
                                         <span class="order-id">#<?php echo $mProduct['id']; ?></span>
                                         <span class="customer-name ms-2 fw-semibold"><?php echo htmlspecialchars($mProduct['product_name']); ?></span>
                                     </div>
+                                </div>
+                                
+                                <div class="mobile-card-row">
+                                    <span class="mobile-card-label">Product Type</span>
+                                    <span class="mobile-card-value">
+                                        <span class="product-type-badge <?php echo $type_class; ?>">
+                                            <i class="bi <?php echo $type_icon; ?> me-1"></i>
+                                            <?php echo $type_label; ?>
+                                        </span>
+                                    </span>
                                 </div>
                                 
                                 <?php if (!empty($mProduct['hsn_code'])): ?>
@@ -1046,7 +1171,7 @@ function isStandardUnit($unit, $standard_units) {
 
 <!-- Add Product Modal with Custom HSN and GST -->
 <div class="modal fade" id="addProductModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-lg">
         <div class="modal-content">
             <form method="POST" action="products.php" data-testid="form-add-product">
                 <input type="hidden" name="action" value="add_product">
@@ -1058,6 +1183,25 @@ function isStandardUnit($unit, $standard_units) {
                     <div class="mb-3">
                         <label class="form-label">Product Name <span class="text-danger">*</span></label>
                         <input type="text" name="product_name" class="form-control" required placeholder="Enter product name" data-testid="input-add-name">
+                    </div>
+                    
+                    <!-- Product Type Selection -->
+                    <div class="product-type-selector">
+                        <label class="form-label fw-semibold mb-2">Product Type <span class="text-danger">*</span></label>
+                        <div class="product-type-option">
+                            <input type="radio" name="product_type" id="add_direct" value="direct" checked>
+                            <label for="add_direct">Direct Sale Product</label>
+                        </div>
+                        <div class="product-type-desc">
+                            <i class="bi bi-info-circle"></i> Products sold directly to customers (e.g., finished goods)
+                        </div>
+                        <div class="product-type-option">
+                            <input type="radio" name="product_type" id="add_converted" value="converted">
+                            <label for="add_converted">Converted Sale Product</label>
+                        </div>
+                        <div class="product-type-desc">
+                            <i class="bi bi-info-circle"></i> Products that are converted from raw materials or other products (e.g., processed goods)
+                        </div>
                     </div>
                     
                     <div class="hsn-type-selector">
@@ -1227,6 +1371,7 @@ function isStandardUnit($unit, $standard_units) {
                         <li>Existing products will be updated based on Product Name</li>
                         <li>New products will be created</li>
                         <li>HSN codes with GST will be auto-created if not exists</li>
+                        <li><strong>Product Type:</strong> Use "direct" or "converted" in the CSV (default: direct)</li>
                     </ul>
                 </div>
                 
@@ -1266,7 +1411,7 @@ function isStandardUnit($unit, $standard_units) {
 <?php include 'includes/scripts.php'; ?>
 <script>
 $(document).ready(function() {
-    $('#productsTable').DataTable({
+    var productsTable = $('#productsTable').DataTable({
         pageLength: 25,
         order: [[0, 'desc']],
         language: {
@@ -1284,6 +1429,38 @@ $(document).ready(function() {
         ]
     });
 
+    // Product Type Filter Function
+    function filterProductsByType(type) {
+        if (type === 'all') {
+            productsTable.column(2).search('').draw();
+        } else {
+            // Use regex to match the product type in the table
+            var searchValue = type === 'direct' ? 'Direct Sale' : 'Converted Sale';
+            productsTable.column(2).search(searchValue, true, false).draw();
+        }
+    }
+
+    // Filter buttons click handler
+    $('.filter-btn').click(function() {
+        var filterType = $(this).data('filter');
+        
+        // Update active state
+        $('.filter-btn').removeClass('active');
+        $(this).addClass('active');
+        
+        // Apply filter
+        filterProductsByType(filterType);
+    });
+    
+    // Stats card click handler
+    $('.stat-direct-clickable').click(function() {
+        $('.filter-btn[data-filter="direct"]').click();
+    });
+    
+    $('.stat-converted-clickable').click(function() {
+        $('.filter-btn[data-filter="converted"]').click();
+    });
+    
     // Handle HSN type selection for add modal
     $('.hsn-type-radio-add').change(function() {
         if ($(this).val() === 'custom') {
@@ -1405,7 +1582,7 @@ $(document).ready(function() {
                         var resultClass = response.imported > 0 && response.failed === 0 ? 'success' : 'error';
                         var resultHtml = '<div class="import-results ' + resultClass + '" style="display: block;">';
                         resultHtml += '<h6><i class="bi bi-' + (response.imported > 0 ? 'check-circle' : 'exclamation-triangle') + '"></i> Import Results</h6>';
-                        resultHtml += '<p><strong>Imported:</strong> ' + response.imported + ' | <strong>Failed:</strong> ' + response.failed + '</p>';
+                        resultHtml += '<p><strong>Imported:</strong> ' + response.imported + ' | <strong>Updated:</strong> ' + (response.updated || 0) + ' | <strong>Failed:</strong> ' + response.failed + '</p>';
                         
                         if (response.errors && response.errors.length > 0) {
                             resultHtml += '<div class="error-list"><strong>Errors:</strong><ul>';
@@ -1420,7 +1597,7 @@ $(document).ready(function() {
                         $('#importResults').html(resultHtml).show();
                         
                         // Reload page after successful import
-                        if (response.imported > 0) {
+                        if (response.imported > 0 || response.updated > 0) {
                             setTimeout(function() {
                                 location.reload();
                             }, 3000);

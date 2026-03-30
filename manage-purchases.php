@@ -1,5 +1,5 @@
 <?php
-// purchases.php
+// purchases.php (manage-purchases.php)
 session_start();
 $currentPage = 'purchases';
 $pageTitle = 'Manage Purchases';
@@ -429,16 +429,17 @@ $recent_activity = $conn->query("
             transition: all 0.2s;
             border: none;
             cursor: pointer;
+            text-decoration: none;
         }
         
         .action-btn.view { background: var(--info); }
         .action-btn.edit { background: var(--primary); }
         .action-btn.delete { background: var(--danger); }
         
-        
         .action-btn:hover {
             transform: translateY(-2px);
             box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+            color: white;
         }
         
         /* Mobile Cards */
@@ -526,10 +527,11 @@ $recent_activity = $conn->query("
             opacity: 0.5;
             pointer-events: none;
         }
-      .table-responsive{
-       border-radius: 22px;
-    overflow-x: auto;
-      }
+        
+        .table-responsive {
+            border-radius: 22px;
+            overflow-x: auto;
+        }
         
         /* Quick Stats Row */
         .quick-stats {
@@ -538,18 +540,14 @@ $recent_activity = $conn->query("
             gap: 12px;
             margin-top: 20px;
         }
-        .card-body-custom{
-            gap:30px;
-    
-        }
+        
         .quick-stat-item {
             background: #f8fafc;
             border-radius: 12px;
             padding: 12px;
             text-align: center;
         }
-        .card-header-custom{
-       
+        
         .quick-stat-value {
             font-size: 18px;
             font-weight: 600;
@@ -600,6 +598,25 @@ $recent_activity = $conn->query("
             .quick-stats {
                 grid-template-columns: repeat(2, 1fr);
             }
+        }
+        
+        /* Purchase Type Badge */
+        .purchase-type-badge {
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 10px;
+            font-weight: 600;
+            display: inline-block;
+        }
+        
+        .purchase-type-badge.category {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+        
+        .purchase-type-badge.product {
+            background: #fed7aa;
+            color: #9a3412;
         }
     </style>
 </head>
@@ -780,97 +797,109 @@ $recent_activity = $conn->query("
 
             <!-- Purchases Table - Desktop View -->
             <div class="purchase-table desktop-table">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Date</th>
-                            <th>Purchase #</th>
-                            <th>Supplier</th>
-                            <th>Items</th>
-                            <th>Taxable</th>
-                            <th>GST</th>
-                            <th>Total</th>
-                            <th>Paid</th>
-                            <th>Status</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php if ($purchases && $purchases->num_rows > 0): ?>
-                            <?php while ($row = $purchases->fetch_assoc()): 
-                                $paid = floatval($row['total_paid'] ?? 0);
-                                $status = getPaymentStatus($row['total'], $paid);
-                                $gst_total = $row['cgst_amount'] + $row['sgst_amount'];
-                                $taxable = $row['total'] - $gst_total;
-                            ?>
-                                <tr>
-                                    <td>
-                                        <span class="fw-semibold"><?php echo date('d/m/Y', strtotime($row['purchase_date'])); ?></span>
-                                        <br><small class="text-muted"><?php echo date('h:i A', strtotime($row['created_at'])); ?></small>
-                                    </td>
-                                    <td>
-                                        <span class="fw-semibold"><?php echo htmlspecialchars($row['purchase_no']); ?></span>
-                                        <?php if (!empty($row['gst_type'])): ?>
-                                            <br><span class="gst-badge <?php echo $row['gst_type']; ?>">
-                                                <?php echo ucfirst($row['gst_type']); ?>
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Purchase #</th>
+                                <th>Type</th>
+                                <th>Supplier</th>
+                                <th>Items</th>
+                                <th>Taxable</th>
+                                <th>GST</th>
+                                <th>Total</th>
+                                <th>Paid</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php if ($purchases && $purchases->num_rows > 0): ?>
+                                <?php while ($row = $purchases->fetch_assoc()): 
+                                    $paid = floatval($row['total_paid'] ?? 0);
+                                    $status = getPaymentStatus($row['total'], $paid);
+                                    $gst_total = $row['cgst_amount'] + $row['sgst_amount'];
+                                    $taxable = $row['total'] - $gst_total;
+                                    $purchase_type = $row['purchase_type'] ?? 'category';
+                                    $type_badge_class = ($purchase_type == 'category') ? 'category' : 'product';
+                                    $type_icon = ($purchase_type == 'category') ? 'bi-layers' : 'bi-box';
+                                    $type_label = ($purchase_type == 'category') ? 'Category' : 'Product';
+                                ?>
+                                    <tr data-id="<?php echo $row['id']; ?>">
+                                        <td>
+                                            <span class="fw-semibold"><?php echo date('d/m/Y', strtotime($row['purchase_date'])); ?></span>
+                                            <br><small class="text-muted"><?php echo date('h:i A', strtotime($row['created_at'])); ?></small>
+                                        </td>
+                                        <td>
+                                            <span class="fw-semibold"><?php echo htmlspecialchars($row['purchase_no']); ?></span>
+                                            <?php if (!empty($row['gst_type'])): ?>
+                                                <br><span class="gst-badge <?php echo $row['gst_type']; ?>">
+                                                    <?php echo ucfirst($row['gst_type']); ?>
+                                                </span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <span class="purchase-type-badge <?php echo $type_badge_class; ?>">
+                                                <i class="bi <?php echo $type_icon; ?> me-1"></i>
+                                                <?php echo $type_label; ?>
                                             </span>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td>
-                                        <div class="fw-semibold"><?php echo htmlspecialchars($row['supplier_name'] ?? 'N/A'); ?></div>
-                                        <?php if (!empty($row['phone'])): ?>
-                                            <small class="text-muted">
-                                                <i class="bi bi-telephone"></i> <?php echo htmlspecialchars($row['phone']); ?>
-                                            </small>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td class="text-center">
-                                        <span class="badge bg-light text-dark"><?php echo $row['item_count']; ?></span>
-                                    </td>
-                                    <td class="text-end">₹<?php echo money2($taxable); ?></td>
-                                    <td class="text-end">
-                                        ₹<?php echo money2($gst_total); ?>
-                                        <?php if ($row['cgst'] > 0): ?>
-                                            <br><small class="text-muted">(<?php echo $row['cgst']; ?>% + <?php echo $row['sgst']; ?>%)</small>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td class="text-end fw-bold">₹<?php echo money2($row['total']); ?></td>
-                                    <td class="text-end">₹<?php echo money2($paid); ?></td>
-                                    <td>
-                                        <span class="status-badge <?php echo $status['badge']; ?>">
-                                            <?php echo $status['text']; ?>
-                                        </span>
-                                    </td>
-                                    <td>
-                                        <div class="action-group">
-                                            <a href="view-purchase.php?id=<?php echo $row['id']; ?>" class="action-btn view" title="View">
-                                                <i class="bi bi-eye"></i>
-                                            </a>
-                                            <!--<a href="edit-purchase.php?id=<?php echo $row['id']; ?>" class="action-btn edit" title="Edit">-->
-                                            <!--    <i class="bi bi-pencil"></i>-->
-                                            <!--</a>-->
-                                           
-                                            <button type="button" class="action-btn delete" title="Delete"
-                                                    onclick="confirmDelete(<?php echo $row['id']; ?>, '<?php echo htmlspecialchars($row['purchase_no']); ?>')">
-                                                <i class="bi bi-trash"></i>
-                                            </button>
-                                        </div>
+                                        </td>
+                                        <td>
+                                            <div class="fw-semibold"><?php echo htmlspecialchars($row['supplier_name'] ?? 'N/A'); ?></div>
+                                            <?php if (!empty($row['phone'])): ?>
+                                                <small class="text-muted">
+                                                    <i class="bi bi-telephone"></i> <?php echo htmlspecialchars($row['phone']); ?>
+                                                </small>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td class="text-center">
+                                            <span class="badge bg-light text-dark"><?php echo $row['item_count']; ?></span>
+                                        </td>
+                                        <td class="text-end">₹<?php echo money2($taxable); ?></td>
+                                        <td class="text-end">
+                                            ₹<?php echo money2($gst_total); ?>
+                                            <?php if ($row['cgst'] > 0): ?>
+                                                <br><small class="text-muted">(<?php echo $row['cgst']; ?>% + <?php echo $row['sgst']; ?>%)</small>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td class="text-end fw-bold">₹<?php echo money2($row['total']); ?></td>
+                                        <td class="text-end">₹<?php echo money2($paid); ?></td>
+                                        <td>
+                                            <span class="status-badge <?php echo $status['badge']; ?>">
+                                                <?php echo $status['text']; ?>
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <div class="action-group">
+                                                <a href="view-purchase.php?id=<?php echo $row['id']; ?>" class="action-btn view" title="View">
+                                                    <i class="bi bi-eye"></i>
+                                                </a>
+                                                <a href="edit-purchase.php?id=<?php echo $row['id']; ?>" class="action-btn edit" title="Edit">
+                                                    <i class="bi bi-pencil"></i>
+                                                </a>
+                                                <button type="button" class="action-btn delete" title="Delete"
+                                                        onclick="confirmDelete(<?php echo $row['id']; ?>, '<?php echo htmlspecialchars($row['purchase_no']); ?>')">
+                                                    <i class="bi bi-trash"></i>
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                <?php endwhile; ?>
+                            <?php else: ?>
+                                <tr>
+                                    <td colspan="11" class="text-center py-5">
+                                        <i class="bi bi-inbox" style="font-size: 48px; color: #cbd5e1;"></i>
+                                        <p class="mt-3 text-muted">No purchases found matching your criteria</p>
+                                        <a href="add-purchase.php" class="btn btn-primary btn-sm">
+                                            <i class="bi bi-plus-circle"></i> Create First Purchase
+                                        </a>
                                     </td>
                                 </tr>
-                            <?php endwhile; ?>
-                        <?php else: ?>
-                            <tr>
-                                <td colspan="10" class="text-center py-5">
-                                    <i class="bi bi-inbox" style="font-size: 48px; color: #cbd5e1;"></i>
-                                    <p class="mt-3 text-muted">No purchases found matching your criteria</p>
-                                    <a href="add-purchase.php" class="btn btn-primary btn-sm">
-                                        <i class="bi bi-plus-circle"></i> Create First Purchase
-                                    </a>
-                                </td>
-                            </tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
             </div>
 
             <!-- Mobile Cards View -->
@@ -883,8 +912,12 @@ $recent_activity = $conn->query("
                         $paid = floatval($row['total_paid'] ?? 0);
                         $status = getPaymentStatus($row['total'], $paid);
                         $gst_total = $row['cgst_amount'] + $row['sgst_amount'];
+                        $purchase_type = $row['purchase_type'] ?? 'category';
+                        $type_badge_class = ($purchase_type == 'category') ? 'category' : 'product';
+                        $type_icon = ($purchase_type == 'category') ? 'bi-layers' : 'bi-box';
+                        $type_label = ($purchase_type == 'category') ? 'Category' : 'Product';
                 ?>
-                        <div class="purchase-card">
+                        <div class="purchase-card" data-id="<?php echo $row['id']; ?>">
                             <div class="purchase-card-header">
                                 <span class="purchase-card-title">#<?php echo htmlspecialchars($row['purchase_no']); ?></span>
                                 <span class="status-badge <?php echo $status['badge']; ?>"><?php echo $status['text']; ?></span>
@@ -893,6 +926,16 @@ $recent_activity = $conn->query("
                             <div class="purchase-card-row">
                                 <span class="purchase-card-label">Date:</span>
                                 <span class="purchase-card-value"><?php echo date('d M Y', strtotime($row['purchase_date'])); ?></span>
+                            </div>
+                            
+                            <div class="purchase-card-row">
+                                <span class="purchase-card-label">Type:</span>
+                                <span class="purchase-card-value">
+                                    <span class="purchase-type-badge <?php echo $type_badge_class; ?>">
+                                        <i class="bi <?php echo $type_icon; ?> me-1"></i>
+                                        <?php echo $type_label; ?>
+                                    </span>
+                                </span>
                             </div>
                             
                             <div class="purchase-card-row">
@@ -933,14 +976,13 @@ $recent_activity = $conn->query("
                             
                             <div class="mt-3 d-flex gap-2 justify-content-end">
                                 <a href="view-purchase.php?id=<?php echo $row['id']; ?>" class="btn btn-sm btn-info">
-                                    <i class="bi bi-eye"></i>
+                                    <i class="bi bi-eye"></i> View
                                 </a>
-                                <!--<a href="edit-purchase.php?id=<?php echo $row['id']; ?>" class="btn btn-sm btn-primary">-->
-                                <!--    <i class="bi bi-pencil"></i>-->
-                                <!--</a>-->
-                                
+                                <a href="edit-purchase.php?id=<?php echo $row['id']; ?>" class="btn btn-sm btn-primary">
+                                    <i class="bi bi-pencil"></i> Edit
+                                </a>
                                 <button class="btn btn-sm btn-danger" onclick="confirmDelete(<?php echo $row['id']; ?>, '<?php echo htmlspecialchars($row['purchase_no']); ?>')">
-                                    <i class="bi bi-trash"></i>
+                                    <i class="bi bi-trash"></i> Delete
                                 </button>
                             </div>
                         </div>
@@ -993,7 +1035,7 @@ $recent_activity = $conn->query("
                     </div>
                     <div class="card-body-custom">
                         <div class="table-responsive">
-                            <table class="table table-sm ">
+                            <table class="table table-sm">
                                 <thead>
                                     <tr>
                                         <th>Time</th>
@@ -1049,7 +1091,7 @@ $recent_activity = $conn->query("
                 <p class="text-danger"><small>This action cannot be undone. All associated items, payments, and GST credits will be removed and stock will be reverted.</small></p>
             </div>
             <div class="modal-footer">
-                <form method="POST" action="purchases.php" id="deleteForm">
+                <form method="POST" action="manage-purchases.php" id="deleteForm">
                     <input type="hidden" name="action" value="delete_purchase">
                     <input type="hidden" name="purchase_id" id="deletePurchaseId">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -1066,18 +1108,14 @@ $recent_activity = $conn->query("
 <script src="https://cdn.jsdelivr.net/npm/daterangepicker/daterangepicker.min.js"></script>
 <script>
 $(document).ready(function() {
-    // ============================================
     // Initialize Select2 for supplier filter
-    // ============================================
     $('#supplierFilter').select2({
         placeholder: 'Select supplier',
         allowClear: true,
         width: '100%'
     });
     
-    // ============================================
     // Initialize Date Range Picker
-    // ============================================
     $('#dateRange').daterangepicker({
         autoUpdateInput: false,
         locale: {
@@ -1097,8 +1135,6 @@ $(document).ready(function() {
         $(this).val(picker.startDate.format('YYYY-MM-DD') + ' - ' + picker.endDate.format('YYYY-MM-DD'));
         $('#from_date').val(picker.startDate.format('YYYY-MM-DD'));
         $('#to_date').val(picker.endDate.format('YYYY-MM-DD'));
-        
-        // Auto submit form when date range is selected
         $('#filterForm').submit();
     });
     
@@ -1106,8 +1142,6 @@ $(document).ready(function() {
         $(this).val('');
         $('#from_date').val('');
         $('#to_date').val('');
-        
-        // Auto submit form when date range is cleared
         $('#filterForm').submit();
     });
     
@@ -1116,48 +1150,27 @@ $(document).ready(function() {
         $('#dateRange').val('<?php echo $from_date; ?> - <?php echo $to_date; ?>');
     <?php endif; ?>
 
-    // ============================================
     // Auto-submit filter on change
-    // ============================================
     $('#supplierFilter, select[name="status"], select[name="gst_type"]').on('change', function() {
         $('#filterForm').submit();
     });
 
-    // ============================================
-    // Search input with debounce (submit after typing stops)
-    // ============================================
+    // Search input with debounce
     let searchTimer;
     $('input[name="search"]').on('keyup', function() {
         clearTimeout(searchTimer);
         searchTimer = setTimeout(() => {
             $('#filterForm').submit();
-        }, 800); // Wait 800ms after user stops typing
+        }, 800);
     });
 
-    // ============================================
     // Initialize tooltips
-    // ============================================
     var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
     var tooltipList = tooltipTriggerList.map(function(tooltipTriggerEl) {
         return new bootstrap.Tooltip(tooltipTriggerEl);
     });
 
-    // ============================================
-    // Table row click to view purchase (except action buttons)
-    // ============================================
-    $('.purchase-table tbody tr').on('click', function(e) {
-        // Don't redirect if clicking on action buttons or links
-        if (!$(e.target).closest('a, button').length) {
-            var purchaseId = $(this).data('id');
-            if (purchaseId) {
-                window.location.href = 'view-purchase.php?id=' + purchaseId;
-            }
-        }
-    });
-
-    // ============================================
-    // Mobile view toggle (optional)
-    // ============================================
+    // Mobile view toggle
     function checkMobileView() {
         if ($(window).width() <= 768) {
             $('.desktop-table').hide();
@@ -1171,38 +1184,23 @@ $(document).ready(function() {
     checkMobileView();
     $(window).resize(checkMobileView);
 
-    // ============================================
-    // Export functionality with loading state
-    // ============================================
-    window.exportPurchases = function() {
-        // Show loading spinner
-        const exportBtn = $('a[href*="export-purchases.php"]');
-        const originalText = exportBtn.html();
-        exportBtn.html('<span class="spinner-border spinner-border-sm me-2"></span>Exporting...').addClass('disabled');
-        
-        // Redirect to export
-        window.location.href = 'export-purchases.php?' + $('#filterForm').serialize();
-        
-        // Restore button after a delay
-        setTimeout(() => {
-            exportBtn.html(originalText).removeClass('disabled');
-        }, 3000);
-    };
-
-    // ============================================
-    // Print purchase function
-    // ============================================
-    window.printPurchase = function(id) {
-        window.open('print-purchase.php?id=' + id, '_blank');
-    };
-
+    // Add data-id attribute to table rows
+    $('.purchase-table tbody tr').each(function() {
+        const deleteBtn = $(this).find('.action-btn.delete');
+        if (deleteBtn.length) {
+            const onclickAttr = deleteBtn.attr('onclick');
+            if (onclickAttr) {
+                const match = onclickAttr.match(/confirmDelete\((\d+)/);
+                if (match && match[1]) {
+                    $(this).attr('data-id', match[1]);
+                }
+            }
+        }
+    });
 });
 
-// ============================================
-// Delete confirmation with AJAX
-// ============================================
+// Delete confirmation function
 function confirmDelete(id, purchaseNo) {
-    // Check if SweetAlert2 is available
     if (typeof Swal !== 'undefined') {
         Swal.fire({
             title: 'Delete Purchase?',
@@ -1234,346 +1232,32 @@ function confirmDelete(id, purchaseNo) {
             focusCancel: true
         }).then((result) => {
             if (result.isConfirmed) {
-                deletePurchaseAJAX(id, purchaseNo);
+                // Submit the delete form
+                $('#deletePurchaseId').val(id);
+                $('#deletePurchaseNo').text(purchaseNo);
+                $('#deleteForm').submit();
             }
         });
     } else {
-        // Fallback to Bootstrap modal
         $('#deletePurchaseId').val(id);
         $('#deletePurchaseNo').text(purchaseNo);
-        
-        // Update modal message with stock warning
-        $('#deleteModal .modal-body').html(`
-            <p>Are you sure you want to delete purchase <strong>#${purchaseNo}</strong>?</p>
-            <div class="alert alert-warning">
-                <i class="bi bi-exclamation-triangle-fill me-2"></i>
-                This will reduce stock quantities and remove all associated records.
-            </div>
-            <p class="text-danger"><small>This action cannot be undone.</small></p>
-        `);
-        
         var deleteModal = new bootstrap.Modal(document.getElementById('deleteModal'));
         deleteModal.show();
     }
 }
 
-// ============================================
-// AJAX Delete Function
-// ============================================
-function deletePurchaseAJAX(id, purchaseNo) {
-    // Show loading state
-    if (typeof Swal !== 'undefined') {
-        Swal.fire({
-            title: 'Deleting Purchase...',
-            html: `
-                <div class="text-center">
-                    <div class="spinner-border text-danger mb-3" role="status">
-                        <span class="visually-hidden">Loading...</span>
-                    </div>
-                    <p>Please wait while we delete the purchase and update stock.</p>
-                    <small class="text-muted">Purchase #${purchaseNo}</small>
-                </div>
-            `,
-            allowOutsideClick: false,
-            showConfirmButton: false,
-            showCancelButton: false
-        });
-    }
-
-    // Create form data
-    const formData = new FormData();
-    formData.append('purchase_id', id);
-    formData.append('ajax', '1');
-
-    // Send AJAX request
-    fetch('delete-purchase.php', {
-        method: 'POST',
-        body: formData,
-        headers: {
-            'X-Requested-With': 'XMLHttpRequest'
-        }
-    })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error('Network response was not ok');
-        }
-        return response.json();
-    })
-    .then(data => {
-        if (data.success) {
-            // Show success message
-            if (typeof Swal !== 'undefined') {
-                Swal.fire({
-                    title: 'Deleted Successfully!',
-                    html: `
-                        <div class="text-center">
-                            <i class="bi bi-check-circle-fill text-success" style="font-size: 48px;"></i>
-                            <p class="mt-3">${data.message}</p>
-                            <div class="bg-light p-3 rounded text-start mt-3">
-                                <small class="text-muted d-block mb-2">Delete Summary:</small>
-                                <div class="d-flex justify-content-between">
-                                    <span>Purchase #:</span>
-                                    <strong>${data.data.purchase_no}</strong>
-                                </div>
-                                <div class="d-flex justify-content-between">
-                                    <span>Items Reverted:</span>
-                                    <strong>${data.data.total_items}</strong>
-                                </div>
-                                ${data.data.reverted_items ? `
-                                    <div class="mt-2">
-                                        <small class="text-muted">Stock updates:</small>
-                                        ${data.data.reverted_items.map(item => `
-                                            <div class="d-flex justify-content-between small">
-                                                <span>${item.cat_name}:</span>
-                                                <span>-${item.qty} pcs</span>
-                                            </div>
-                                        `).join('')}
-                                    </div>
-                                ` : ''}
-                            </div>
-                        </div>
-                    `,
-                    icon: 'success',
-                    showConfirmButton: true,
-                    confirmButtonColor: '#28a745',
-                    confirmButtonText: 'OK'
-                }).then(() => {
-                    // Remove the deleted row from table without reloading
-                    removePurchaseRow(id);
-                });
-            } else {
-                alert(data.message);
-                location.reload();
-            }
-        } else {
-            // Show error message
-            if (typeof Swal !== 'undefined') {
-                Swal.fire({
-                    title: 'Error!',
-                    html: `
-                        <div class="text-center">
-                            <i class="bi bi-exclamation-triangle-fill text-danger" style="font-size: 48px;"></i>
-                            <p class="mt-3 text-danger">${data.message}</p>
-                            <small class="text-muted">Please try again or contact support.</small>
-                        </div>
-                    `,
-                    icon: 'error',
-                    confirmButtonColor: '#dc3545',
-                    confirmButtonText: 'Try Again'
-                });
-            } else {
-                alert('Error: ' + data.message);
-            }
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        if (typeof Swal !== 'undefined') {
-            Swal.fire({
-                title: 'Error!',
-                html: `
-                    <div class="text-center">
-                        <i class="bi bi-exclamation-triangle-fill text-danger" style="font-size: 48px;"></i>
-                        <p class="mt-3">An unexpected error occurred.</p>
-                        <small class="text-muted">${error.message}</small>
-                    </div>
-                `,
-                icon: 'error',
-                confirmButtonColor: '#dc3545',
-                confirmButtonText: 'OK'
-            });
-        } else {
-            alert('An unexpected error occurred. Please try again.');
-        }
-    });
-}
-
-// ============================================
-// Remove purchase row from table without reload
-// ============================================
-function removePurchaseRow(id) {
-    // Remove from desktop table
-    $(`tr[data-id="${id}"]`).fadeOut(300, function() {
-        $(this).remove();
-        
-        // Check if table is empty
-        if ($('#itemsBody tr').length === 0) {
-            $('#itemsBody').html('<tr><td colspan="10" class="text-center py-4 text-muted">No purchases found</td></tr>');
-        }
-        
-        // Update statistics (you might want to fetch new stats via AJAX)
-        updateStatistics();
-    });
-    
-    // Remove from mobile cards
-    $(`.purchase-card[data-id="${id}"]`).fadeOut(300, function() {
-        $(this).remove();
-    });
-}
-
-// ============================================
-// Update statistics after delete (AJAX)
-// ============================================
-function updateStatistics() {
-    // You can implement this to fetch updated stats via AJAX
-    // For now, just reload the stats section
-    $.ajax({
-        url: 'get-purchase-stats.php',
-        method: 'GET',
-        success: function(response) {
-            // Update stats cards with new data
-            // This requires a separate endpoint to fetch updated statistics
-        },
-        error: function() {
-            // If stats update fails, reload the page after a delay
-            setTimeout(() => {
-                location.reload();
-            }, 2000);
-        }
-    });
-}
-
-// ============================================
-// Bulk delete function (if needed)
-// ============================================
-function bulkDelete() {
-    const selectedIds = [];
-    $('input[name="purchase_ids[]"]:checked').each(function() {
-        selectedIds.push($(this).val());
-    });
-    
-    if (selectedIds.length === 0) {
-        Swal.fire({
-            title: 'No Selection',
-            text: 'Please select at least one purchase to delete.',
-            icon: 'warning',
-            confirmButtonColor: '#6c757d'
-        });
-        return;
-    }
-    
-    Swal.fire({
-        title: 'Bulk Delete?',
-        html: `Are you sure you want to delete <strong>${selectedIds.length}</strong> purchases?`,
-        icon: 'warning',
-        showCancelButton: true,
-        confirmButtonColor: '#dc3545',
-        confirmButtonText: 'Yes, delete all',
-        cancelButtonText: 'Cancel'
-    }).then((result) => {
-        if (result.isConfirmed) {
-            // Implement bulk delete AJAX
-            bulkDeleteAJAX(selectedIds);
-        }
-    });
-}
-
-// ============================================
-// Intercept Bootstrap modal delete form
-// ============================================
-$(document).ready(function() {
-    $('#deleteForm').on('submit', function(e) {
+// Keyboard shortcuts
+$(document).on('keydown', function(e) {
+    // Alt + N for new purchase
+    if (e.altKey && e.key === 'n') {
         e.preventDefault();
-        
-        const id = $('#deletePurchaseId').val();
-        const purchaseNo = $('#deletePurchaseNo').text();
-        
-        // Close the Bootstrap modal
-        var deleteModal = bootstrap.Modal.getInstance(document.getElementById('deleteModal'));
-        if (deleteModal) {
-            deleteModal.hide();
-        }
-        
-        // Use AJAX delete
-        deletePurchaseAJAX(id, purchaseNo);
-    });
-
-    // ============================================
-    // Add data-id attribute to table rows
-    // ============================================
-    $('.purchase-table tbody tr').each(function() {
-        const deleteBtn = $(this).find('.action-btn.delete');
-        if (deleteBtn.length) {
-            const onclickAttr = deleteBtn.attr('onclick');
-            if (onclickAttr) {
-                const match = onclickAttr.match(/confirmDelete\((\d+)/);
-                if (match && match[1]) {
-                    $(this).attr('data-id', match[1]);
-                }
-            }
-        }
-    });
-
-    // ============================================
-    // Add data-id attribute to mobile cards
-    // ============================================
-    $('.purchase-card').each(function() {
-        const deleteBtn = $(this).find('.btn-danger');
-        if (deleteBtn.length) {
-            const onclickAttr = deleteBtn.attr('onclick');
-            if (onclickAttr) {
-                const match = onclickAttr.match(/confirmDelete\((\d+)/);
-                if (match && match[1]) {
-                    $(this).attr('data-id', match[1]);
-                }
-            }
-        }
-    });
-
-    // ============================================
-    // Keyboard shortcuts
-    // ============================================
-    $(document).on('keydown', function(e) {
-        // Alt + N for new purchase
-        if (e.altKey && e.key === 'n') {
-            e.preventDefault();
-            window.location.href = 'add-purchase.php';
-        }
-        
-        // Alt + E for export
-        if (e.altKey && e.key === 'e') {
-            e.preventDefault();
-            exportPurchases();
-        }
-        
-        // Escape to clear filters
-        if (e.key === 'Escape' && !$('input, select').is(':focus')) {
-            window.location.href = 'purchases.php';
-        }
-    });
-
-    // ============================================
-    // Show/hide filter panel on mobile
-    // ============================================
-    $('#toggleFilters').on('click', function() {
-        $('.filter-section').slideToggle();
-    });
-
-    // ============================================
-    // Initialize tooltips for action buttons
-    // ============================================
-    $('.action-btn').each(function() {
-        const title = $(this).attr('title');
-        if (title) {
-            $(this).attr('data-bs-toggle', 'tooltip');
-            $(this).attr('data-bs-placement', 'top');
-            $(this).attr('title', title);
-        }
-    });
-
-    // ============================================
-    // Refresh button
-    // ============================================
-    $('#refreshData').on('click', function() {
-        location.reload();
-    });
-
-    // ============================================
-    // Print all purchases (optional)
-    // ============================================
-    $('#printAll').on('click', function() {
-        window.open('print-purchases-list.php?' + $('#filterForm').serialize(), '_blank');
-    });
+        window.location.href = 'add-purchase.php';
+    }
+    
+    // Escape to clear filters
+    if (e.key === 'Escape' && !$('input, select').is(':focus')) {
+        window.location.href = 'manage-purchases.php';
+    }
 });
 </script>
 
@@ -1604,16 +1288,6 @@ $(document).ready(function() {
     border-radius: 10px !important;
     padding: 10px 30px !important;
     font-weight: 600 !important;
-}
-
-/* Custom animation for row removal */
-@keyframes fadeOut {
-    from { opacity: 1; }
-    to { opacity: 0; }
-}
-
-.fade-out {
-    animation: fadeOut 0.3s ease forwards;
 }
 
 /* Tooltips */
@@ -1652,7 +1326,6 @@ $(document).ready(function() {
     margin: 0 2px;
 }
 </style>
-
 
 </body>
 </html>

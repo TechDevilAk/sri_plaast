@@ -11,7 +11,7 @@ checkRoleAccess(['admin', 'sale']);
 
 // Check if purchase ID is provided
 if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
-    header('Location: purchases.php');
+    header('Location: manage-purchases.php');
     exit;
 }
 
@@ -54,17 +54,20 @@ $stmt->execute();
 $purchase = $stmt->get_result()->fetch_assoc();
 
 if (!$purchase) {
-    header('Location: purchases.php');
+    header('Location: manage-purchases.php');
     exit;
 }
 
-// Get purchase items with category details
+// Get purchase items with category and product details
 $item_stmt = $conn->prepare("
     SELECT pi.*, 
            c.category_name, c.gram_value, c.purchase_price as current_price,
-           c.total_quantity as current_stock
+           c.total_quantity as current_stock,
+           prod.product_name, prod.product_type, prod.primary_unit as product_unit,
+           prod.stock_quantity as product_stock
     FROM purchase_item pi
     LEFT JOIN category c ON pi.cat_id = c.id
+    LEFT JOIN product prod ON pi.product_id = prod.id
     WHERE pi.purchase_id = ?
     ORDER BY pi.id ASC
 ");
@@ -111,6 +114,15 @@ $search_term = "%{$purchase['purchase_no']}%";
 $log_stmt->bind_param("s", $search_term);
 $log_stmt->execute();
 $activity_logs = $log_stmt->get_result();
+
+// Determine purchase type display
+$purchase_type = $purchase['purchase_type'] ?? 'category';
+$type_badge_class = ($purchase_type == 'category') ? 'category' : 'product';
+$type_icon = ($purchase_type == 'category') ? 'bi-layers' : 'bi-box';
+$type_label = ($purchase_type == 'category') ? 'Category Purchase' : 'Product Purchase';
+$type_desc = ($purchase_type == 'category') 
+    ? 'Raw materials purchased in KG and converted to pieces' 
+    : 'Finished products purchased directly in their primary unit';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -134,7 +146,6 @@ $activity_logs = $log_stmt->get_result();
         
         /* Invoice Styles */
         .invoice-container {
-          
             margin: 0 auto;
         }
         
@@ -187,6 +198,25 @@ $activity_logs = $log_stmt->get_result();
         .badge-unpaid {
             background: rgba(239, 68, 68, 0.2);
             color: #ef4444;
+        }
+        
+        .purchase-type-badge {
+            display: inline-block;
+            padding: 6px 16px;
+            border-radius: 30px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+        
+        .purchase-type-badge.category {
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+        }
+        
+        .purchase-type-badge.product {
+            background: rgba(59, 130, 246, 0.2);
+            color: #3b82f6;
         }
         
         .info-section {
@@ -264,6 +294,26 @@ $activity_logs = $log_stmt->get_result();
         .gst-badge.inclusive {
             background: #fef3c7;
             color: #d97706;
+        }
+        
+        .category-badge {
+            background: #f0fdf4;
+            color: #16a34a;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
+        }
+        
+        .product-badge {
+            background: #dbeafe;
+            color: #1e40af;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
         }
         
         /* Table Styles */
@@ -524,6 +574,22 @@ $activity_logs = $log_stmt->get_result();
             color: #64748b;
         }
         
+        /* Detail Row Styles */
+        .detail-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            margin-top: 10px;
+        }
+        
+        .detail-badge {
+            background: #f1f5f9;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
         /* Mobile Responsive */
         @media (max-width: 768px) {
             .invoice-header {
@@ -563,7 +629,41 @@ $activity_logs = $log_stmt->get_result();
         }
         
         /* Print Styles */
-        
+        @media print {
+            .app-wrapper .sidebar,
+            .app-wrapper .topbar,
+            .action-buttons,
+            .btn-action,
+            .btn-close,
+            .footer {
+                display: none !important;
+            }
+            
+            .main-content {
+                margin-left: 0 !important;
+                padding: 0 !important;
+            }
+            
+            .invoice-card {
+                box-shadow: none;
+                border: 1px solid #e2e8f0;
+            }
+            
+            .invoice-header {
+                background: #f8fafc;
+                color: var(--dark);
+            }
+            
+            .summary-card {
+                background: #f8fafc;
+                color: var(--dark);
+                border: 1px solid #e2e8f0;
+            }
+            
+            .summary-row {
+                border-bottom: 1px solid #e2e8f0;
+            }
+        }
     </style>
 </head>
 <body>
@@ -584,13 +684,17 @@ $activity_logs = $log_stmt->get_result();
                         <p style="font-size: 14px; color: var(--text-muted); margin: 0;">View complete purchase information</p>
                     </div>
                     <div class="action-buttons">
+                        <button onclick="window.print()" class="btn-action print">
+                            <i class="bi bi-printer"></i> Print
+                        </button>
+                        <?php if ($_SESSION['user_role'] === 'admin'): ?>
+                        <a href="edit-purchase.php?id=<?php echo $purchase_id; ?>" class="btn-action edit">
+                            <i class="bi bi-pencil"></i> Edit
+                        </a>
+                        <?php endif; ?>
                         <a href="manage-purchases.php" class="btn-action back">
                             <i class="bi bi-arrow-left"></i> Back to List
                         </a>
-                       
-                        <!--<a href="edit-purchase.php?id=<?php echo $purchase_id; ?>" class="btn-action edit">-->
-                        <!--    <i class="bi bi-pencil"></i> Edit-->
-                        <!--</a>-->
                     </div>
                 </div>
 
@@ -607,6 +711,12 @@ $activity_logs = $log_stmt->get_result();
                                         <span class="ms-4"><i class="bi bi-receipt me-2"></i>Supplier Invoice: <?php echo htmlspecialchars($purchase['invoice_num']); ?></span>
                                     <?php endif; ?>
                                 </p>
+                                <!-- Purchase Type Badge -->
+                                <div class="purchase-type-badge <?php echo $type_badge_class; ?>">
+                                    <i class="bi <?php echo $type_icon; ?> me-2"></i>
+                                    <?php echo $type_label; ?>
+                                    <small class="ms-2">(<?php echo $type_desc; ?>)</small>
+                                </div>
                             </div>
                             <div class="col-md-4 text-md-end">
                                 <div class="invoice-badge <?php echo $status['badge'] === 'success' ? 'badge-paid' : ($status['badge'] === 'warning' ? 'badge-partial' : 'badge-unpaid'); ?>">
@@ -708,10 +818,12 @@ $activity_logs = $log_stmt->get_result();
                             <thead>
                                 <tr>
                                     <th>#</th>
-                                    <th>Category</th>
-                                    <th>Gram/pc</th>
+                                    <th>Type</th>
+                                    <th>Item Name</th>
+                                    <th>Details</th>
                                     <th>Quantity</th>
-                                    <th>Price/pc</th>
+                                    <th>Unit</th>
+                                    <th>Price/Unit</th>
                                     <th>Taxable</th>
                                     <th>GST</th>
                                     <th>Total</th>
@@ -727,6 +839,14 @@ $activity_logs = $log_stmt->get_result();
                                 if ($items && $items->num_rows > 0): 
                                     while ($item = $items->fetch_assoc()): 
                                         $item_count++;
+                                        $item_type = $item['product_id'] ? 'product' : 'category';
+                                        $type_badge = ($item_type == 'category') 
+                                            ? '<span class="category-badge"><i class="bi bi-layers"></i> Category</span>'
+                                            : '<span class="product-badge"><i class="bi bi-box"></i> Product</span>';
+                                        $item_name = ($item_type == 'category') 
+                                            ? $item['category_name'] 
+                                            : $item['product_name'];
+                                        
                                         $taxable = floatval($item['taxable']);
                                         $cgst_amt = floatval($item['cgst_amount']);
                                         $sgst_amt = floatval($item['sgst_amount']);
@@ -735,41 +855,52 @@ $activity_logs = $log_stmt->get_result();
                                         $total_taxable += $taxable;
                                         $total_gst += ($cgst_amt + $sgst_amt);
                                         $total_amount += $item_total;
+                                        
+                                        if ($item_type == 'category') {
+                                            $details = "{$item['cat_grm_value']} g/pc • " . floatval($item['sec_qty']) . " kg = " . round(floatval($item['qty'])) . " pcs";
+                                            $quantity = round(floatval($item['qty']));
+                                            $unit = 'pcs';
+                                            $price_unit = money2($item['purchase_price']);
+                                        } else {
+                                            $unit = $item['product_unit'] ?? 'pcs';
+                                            $details = "Direct Product Purchase";
+                                            $quantity = floatval($item['qty']);
+                                            $price_unit = money2($item['purchase_price']);
+                                        }
                                 ?>
-                                    <tr>
+                                     <tr>
                                         <td><?php echo $item_count; ?></td>
-                                        <td class="fw-semibold"><?php echo htmlspecialchars($item['cat_name']); ?></td>
-                                        <td class="text-end"><?php echo floatval($item['cat_grm_value']); ?> g</td>
-                                        <td class="text-end">
-                                            <?php echo floatval($item['sec_qty']); ?> kg<br>
-                                            <small class="text-muted">(<?php echo floatval($item['qty']); ?> pcs)</small>
-                                        </td>
-                                        <td class="text-end">₹<?php echo money2($item['purchase_price']); ?></td>
+                                        <td><?php echo $type_badge; ?></td>
+                                        <td class="fw-semibold"><?php echo htmlspecialchars($item_name); ?></td>
+                                        <td class="text-muted small"><?php echo htmlspecialchars($details); ?></td>
+                                        <td class="text-end"><?php echo number_format($quantity, 2); ?></td>
+                                        <td class="text-end"><?php echo htmlspecialchars($unit); ?></td>
+                                        <td class="text-end">₹<?php echo $price_unit; ?></td>
                                         <td class="text-end">₹<?php echo money2($taxable); ?></td>
                                         <td class="text-end">
                                             <?php echo floatval($item['cgst']) + floatval($item['sgst']); ?>%<br>
                                             <small class="text-muted">₹<?php echo money2($cgst_amt + $sgst_amt); ?></small>
                                         </td>
                                         <td class="text-end fw-bold">₹<?php echo money2($item_total); ?></td>
-                                    </tr>
+                                     </tr>
                                 <?php 
                                     endwhile; 
                                 else: 
                                 ?>
-                                    <tr>
-                                        <td colspan="8" class="text-center py-4 text-muted">
+                                     <tr>
+                                        <td colspan="10" class="text-center py-4 text-muted">
                                             No items found in this purchase
                                         </td>
-                                    </tr>
+                                     </tr>
                                 <?php endif; ?>
                             </tbody>
                             <tfoot>
-                                <tr>
-                                    <td colspan="5" class="text-end fw-bold">Totals:</td>
+                                 <tr>
+                                    <td colspan="7" class="text-end fw-bold">Totals:</td>
                                     <td class="text-end fw-bold">₹<?php echo money2($total_taxable); ?></td>
                                     <td class="text-end fw-bold">₹<?php echo money2($total_gst); ?></td>
                                     <td class="text-end fw-bold">₹<?php echo money2($total_amount); ?></td>
-                                </tr>
+                                 </tr>
                             </tfoot>
                         </table>
                     </div>
@@ -842,6 +973,10 @@ $activity_logs = $log_stmt->get_result();
                                 </span>
                             </div>
                             <div class="summary-row">
+                                <span class="summary-label">Purchase Type</span>
+                                <span class="summary-value"><?php echo $type_label; ?></span>
+                            </div>
+                            <div class="summary-row">
                                 <span class="summary-label">Created On</span>
                                 <span class="summary-value"><?php echo date('d M Y, h:i A', strtotime($purchase['created_at'])); ?></span>
                             </div>
@@ -877,7 +1012,7 @@ $activity_logs = $log_stmt->get_result();
                                     </div>
                                     <div class="activity-content">
                                         <div class="activity-title">
-                                            <?php echo htmlspecialchars($log['action'] ?? 'Action'); ?> - 
+                                            <?php echo ucfirst(htmlspecialchars($log['action'] ?? 'Action')); ?> - 
                                             <?php echo htmlspecialchars($log['user_name'] ?? 'System'); ?>
                                         </div>
                                         <div class="activity-time">
@@ -909,7 +1044,12 @@ $activity_logs = $log_stmt->get_result();
 </div>
 
 <?php include 'includes/scripts.php'; ?>
-
+<script>
+    // Print functionality
+    document.querySelector('.btn-action.print')?.addEventListener('click', function() {
+        window.print();
+    });
+</script>
 
 </body>
 </html>

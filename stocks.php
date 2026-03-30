@@ -22,66 +22,129 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'get_stock' && isset($_GET['id']) 
     header('X-Content-Type-Options: nosniff');
     
     $id = intval($_GET['id']);
+    $type = isset($_GET['type']) ? $_GET['type'] : 'category'; // 'category' or 'product'
     
     try {
-        // Get stock item details
-        $stmt = $conn->prepare("SELECT * FROM category WHERE id = ?");
-        if (!$stmt) {
-            throw new Exception("Database prepare failed: " . $conn->error);
-        }
-        
-        $stmt->bind_param("i", $id);
-        if (!$stmt->execute()) {
-            throw new Exception("Execute failed: " . $stmt->error);
-        }
-        
-        $result = $stmt->get_result();
-        
-        if ($result->num_rows > 0) {
-            $item = $result->fetch_assoc();
-            
-            // FIXED: Get recent purchase history for this category - using purchase_no column
-            $purchase_stmt = $conn->prepare("
-                SELECT 
-                    p.purchase_no,
-                    p.purchase_date,
-                    p.created_at, 
-                    pi.qty as quantity, 
-                    pi.purchase_price 
-                FROM purchase_item pi
-                JOIN purchase p ON pi.purchase_id = p.id
-                WHERE pi.cat_id = ?
-                ORDER BY p.created_at DESC
-                LIMIT 5
-            ");
-            
-            if ($purchase_stmt) {
-                $purchase_stmt->bind_param("i", $id);
-                $purchase_stmt->execute();
-                $purchases = $purchase_stmt->get_result();
-                
-                $purchase_list = [];
-                while ($pur = $purchases->fetch_assoc()) {
-                    // Format purchase number - use purchase_no if available
-                    if (empty($pur['purchase_no'])) {
-                        $pur['purchase_no'] = 'PUR-' . date('Ymd', strtotime($pur['created_at'])) . '-' . sprintf('%03d', $id);
-                    }
-                    $purchase_list[] = $pur;
-                }
-                $purchase_stmt->close();
-            } else {
-                $purchase_list = [];
+        if ($type === 'product') {
+            // Get product stock details
+            $stmt = $conn->prepare("SELECT * FROM product WHERE id = ?");
+            if (!$stmt) {
+                throw new Exception("Database prepare failed: " . $conn->error);
             }
             
-            echo json_encode([
-                'success' => true, 
-                'item' => $item,
-                'purchases' => $purchase_list
-            ]);
+            $stmt->bind_param("i", $id);
+            if (!$stmt->execute()) {
+                throw new Exception("Execute failed: " . $stmt->error);
+            }
+            
+            $result = $stmt->get_result();
+            
+            if ($result->num_rows > 0) {
+                $item = $result->fetch_assoc();
+                
+                // Get recent purchase history for this product
+                $purchase_stmt = $conn->prepare("
+                    SELECT 
+                        p.purchase_no,
+                        p.purchase_date,
+                        p.created_at, 
+                        pi.qty as quantity, 
+                        pi.purchase_price,
+                        pi.unit
+                    FROM purchase_item pi
+                    JOIN purchase p ON pi.purchase_id = p.id
+                    WHERE pi.product_id = ?
+                    ORDER BY p.created_at DESC
+                    LIMIT 5
+                ");
+                
+                if ($purchase_stmt) {
+                    $purchase_stmt->bind_param("i", $id);
+                    $purchase_stmt->execute();
+                    $purchases = $purchase_stmt->get_result();
+                    
+                    $purchase_list = [];
+                    while ($pur = $purchases->fetch_assoc()) {
+                        if (empty($pur['purchase_no'])) {
+                            $pur['purchase_no'] = 'PUR-' . date('Ymd', strtotime($pur['created_at'])) . '-' . sprintf('%03d', $id);
+                        }
+                        $purchase_list[] = $pur;
+                    }
+                    $purchase_stmt->close();
+                } else {
+                    $purchase_list = [];
+                }
+                
+                echo json_encode([
+                    'success' => true, 
+                    'item' => $item,
+                    'purchases' => $purchase_list,
+                    'type' => 'product'
+                ]);
+            } else {
+                echo json_encode(['success' => false, 'message' => 'Product not found']);
+            }
+            $stmt->close();
         } else {
-            echo json_encode(['success' => false, 'message' => 'Stock item not found']);
+            // Get category stock details
+            $stmt = $conn->prepare("SELECT * FROM category WHERE id = ?");
+            if (!$stmt) {
+                throw new Exception("Database prepare failed: " . $conn->error);
+            }
+            
+            $stmt->bind_param("i", $id);
+            if (!$stmt->execute()) {
+                throw new Exception("Execute failed: " . $stmt->error);
+            }
+            
+            $result = $stmt->get_result();
+            
+            if ($result->num_rows > 0) {
+                $item = $result->fetch_assoc();
+                
+                // Get recent purchase history for this category
+                $purchase_stmt = $conn->prepare("
+                    SELECT 
+                        p.purchase_no,
+                        p.purchase_date,
+                        p.created_at, 
+                        pi.qty as quantity, 
+                        pi.purchase_price 
+                    FROM purchase_item pi
+                    JOIN purchase p ON pi.purchase_id = p.id
+                    WHERE pi.cat_id = ?
+                    ORDER BY p.created_at DESC
+                    LIMIT 5
+                ");
+                
+                if ($purchase_stmt) {
+                    $purchase_stmt->bind_param("i", $id);
+                    $purchase_stmt->execute();
+                    $purchases = $purchase_stmt->get_result();
+                    
+                    $purchase_list = [];
+                    while ($pur = $purchases->fetch_assoc()) {
+                        if (empty($pur['purchase_no'])) {
+                            $pur['purchase_no'] = 'PUR-' . date('Ymd', strtotime($pur['created_at'])) . '-' . sprintf('%03d', $id);
+                        }
+                        $purchase_list[] = $pur;
+                    }
+                    $purchase_stmt->close();
+                } else {
+                    $purchase_list = [];
+                }
+                
+                echo json_encode([
+                    'success' => true, 
+                    'item' => $item,
+                    'purchases' => $purchase_list,
+                    'type' => 'category'
+                ]);
+            } else {
+                echo json_encode(['success' => false, 'message' => 'Stock item not found']);
+            }
+            $stmt->close();
         }
-        $stmt->close();
     } catch (Exception $e) {
         echo json_encode(['success' => false, 'message' => $e->getMessage()]);
     }
@@ -91,21 +154,19 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'get_stock' && isset($_GET['id']) 
 $success = '';
 $error = '';
 
-// Handle stock update (add/subtract) - Admin only
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update_stock' && isset($_POST['category_id']) && is_numeric($_POST['category_id'])) {
-    // Check if user is admin for write operations
+// Handle category stock update (add/subtract) - Admin only
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update_category_stock' && isset($_POST['category_id']) && is_numeric($_POST['category_id'])) {
     if ($_SESSION['user_role'] !== 'admin') {
         $error = 'You do not have permission to update stock.';
     } else {
         $updateId = intval($_POST['category_id']);
         $stock_change = floatval($_POST['stock_change'] ?? 0);
-        $operation = $_POST['operation'] ?? 'add'; // 'add' or 'subtract'
+        $operation = $_POST['operation'] ?? 'add';
         $notes = trim($_POST['notes'] ?? '');
         
         if ($stock_change <= 0) {
             $error = "Please enter a valid quantity.";
         } else {
-            // Get current stock
             $current_query = $conn->prepare("SELECT category_name, total_quantity, purchase_price FROM category WHERE id = ?");
             $current_query->bind_param("i", $updateId);
             $current_query->execute();
@@ -137,11 +198,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     $stmt->bind_param("di", $new_quantity, $updateId);
                     
                     if ($stmt->execute()) {
-                        // Calculate stock value change
                         $value_change = $stock_change * $current_data['purchase_price'];
                         
-                        // Log activity with details
-                        $log_desc = "Stock " . $operation_text . " '" . $current_data['category_name'] . "': " . 
+                        $log_desc = "Stock " . $operation_text . " category '" . $current_data['category_name'] . "': " . 
                                    number_format($stock_change, 2) . " PCS (" . $operation_sign . "). " . 
                                    "Previous: " . number_format($old_quantity, 2) . " PCS, " .
                                    "New: " . number_format($new_quantity, 2) . " PCS";
@@ -164,14 +223,83 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 }
 
-// Handle edit stock (POST only) - Admin only
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'edit_stock' && isset($_POST['category_id']) && is_numeric($_POST['category_id'])) {
+// Handle product stock update (add/subtract) - Admin only
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update_product_stock' && isset($_POST['product_id']) && is_numeric($_POST['product_id'])) {
+    if ($_SESSION['user_role'] !== 'admin') {
+        $error = 'You do not have permission to update stock.';
+    } else {
+        $updateId = intval($_POST['product_id']);
+        $stock_change = floatval($_POST['stock_change'] ?? 0);
+        $operation = $_POST['operation'] ?? 'add';
+        $notes = trim($_POST['notes'] ?? '');
+        
+        if ($stock_change <= 0) {
+            $error = "Please enter a valid quantity.";
+        } else {
+            $current_query = $conn->prepare("SELECT product_name, stock_quantity, product_type, primary_unit FROM product WHERE id = ?");
+            $current_query->bind_param("i", $updateId);
+            $current_query->execute();
+            $current_result = $current_query->get_result();
+            $current_data = $current_result->fetch_assoc();
+            
+            if (!$current_data) {
+                $error = "Product not found.";
+            } else {
+                $unit = $current_data['primary_unit'] ?? 'pcs';
+                $new_quantity = $current_data['stock_quantity'];
+                $old_quantity = $current_data['stock_quantity'];
+                
+                if ($operation === 'add') {
+                    $new_quantity += $stock_change;
+                    $operation_text = 'added to';
+                    $operation_sign = '+';
+                } else {
+                    if ($current_data['stock_quantity'] < $stock_change) {
+                        $error = "Insufficient stock. Current stock: " . number_format($current_data['stock_quantity'], 2) . " " . strtoupper($unit);
+                    } else {
+                        $new_quantity -= $stock_change;
+                        $operation_text = 'removed from';
+                        $operation_sign = '-';
+                    }
+                }
+                
+                if (empty($error)) {
+                    $stmt = $conn->prepare("UPDATE product SET stock_quantity = ? WHERE id = ?");
+                    $stmt->bind_param("di", $new_quantity, $updateId);
+                    
+                    if ($stmt->execute()) {
+                        $log_desc = "Stock " . $operation_text . " product '" . $current_data['product_name'] . "': " . 
+                                   number_format($stock_change, 2) . " " . strtoupper($unit) . " (" . $operation_sign . "). " . 
+                                   "Previous: " . number_format($old_quantity, 2) . " " . strtoupper($unit) . ", " .
+                                   "New: " . number_format($new_quantity, 2) . " " . strtoupper($unit);
+                        
+                        $log_query = "INSERT INTO activity_log (user_id, action, description) VALUES (?, 'stock_update', ?)";
+                        $log_stmt = $conn->prepare($log_query);
+                        $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
+                        $log_stmt->execute();
+                        $log_stmt->close();
+                        
+                        $success = "Stock updated successfully. New quantity: " . number_format($new_quantity, 2) . " " . strtoupper($unit);
+                    } else {
+                        $error = "Failed to update stock.";
+                    }
+                    $stmt->close();
+                }
+            }
+            $current_query->close();
+        }
+    }
+}
+
+// Handle edit category stock item - Admin only
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'edit_category_stock' && isset($_POST['category_id']) && is_numeric($_POST['category_id'])) {
     if ($_SESSION['user_role'] !== 'admin') {
         $error = 'You do not have permission to edit stock.';
     } else {
         $editId = intval($_POST['category_id']);
         $category_name = trim($_POST['category_name'] ?? '');
         $purchase_price = floatval($_POST['purchase_price'] ?? 0);
+        $gram_value = floatval($_POST['gram_value'] ?? 0);
         $min_stock_level = floatval($_POST['min_stock_level'] ?? 0);
         
         if (empty($category_name)) {
@@ -179,34 +307,69 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         } elseif ($purchase_price <= 0) {
             $error = "Purchase price must be greater than 0.";
         } else {
-            $stmt = $conn->prepare("UPDATE category SET category_name = ?, purchase_price = ?, min_stock_level = ? WHERE id = ?");
-            $stmt->bind_param("sddi", $category_name, $purchase_price, $min_stock_level, $editId);
+            $stmt = $conn->prepare("UPDATE category SET category_name = ?, purchase_price = ?, gram_value = ?, min_stock_level = ? WHERE id = ?");
+            $stmt->bind_param("sdddi", $category_name, $purchase_price, $gram_value, $min_stock_level, $editId);
             
             if ($stmt->execute()) {
-                $log_desc = "Updated stock item: " . $category_name;
+                $log_desc = "Updated stock category: " . $category_name;
                 $log_query = "INSERT INTO activity_log (user_id, action, description) VALUES (?, 'update', ?)";
                 $log_stmt = $conn->prepare($log_query);
                 $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
                 $log_stmt->execute();
                 $log_stmt->close();
                 
-                $success = "Stock item updated successfully.";
+                $success = "Stock category updated successfully.";
             } else {
-                $error = "Failed to update stock item.";
+                $error = "Failed to update stock category.";
             }
             $stmt->close();
         }
     }
 }
 
-// Handle delete stock item (Admin only)
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_stock' && isset($_POST['category_id']) && is_numeric($_POST['category_id'])) {
+// Handle edit product stock item - Admin only
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'edit_product_stock' && isset($_POST['product_id']) && is_numeric($_POST['product_id'])) {
+    if ($_SESSION['user_role'] !== 'admin') {
+        $error = 'You do not have permission to edit stock.';
+    } else {
+        $editId = intval($_POST['product_id']);
+        $product_name = trim($_POST['product_name'] ?? '');
+        $product_type = trim($_POST['product_type'] ?? 'direct');
+        $primary_unit = trim($_POST['primary_unit'] ?? '');
+        $min_stock_level = floatval($_POST['min_stock_level'] ?? 0);
+        
+        if (empty($product_name)) {
+            $error = "Product name is required.";
+        } elseif (empty($primary_unit)) {
+            $error = "Primary unit is required.";
+        } else {
+            $stmt = $conn->prepare("UPDATE product SET product_name = ?, product_type = ?, primary_unit = ?, min_stock_level = ? WHERE id = ?");
+            $stmt->bind_param("sssdi", $product_name, $product_type, $primary_unit, $min_stock_level, $editId);
+            
+            if ($stmt->execute()) {
+                $log_desc = "Updated product stock: " . $product_name;
+                $log_query = "INSERT INTO activity_log (user_id, action, description) VALUES (?, 'update', ?)";
+                $log_stmt = $conn->prepare($log_query);
+                $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
+                $log_stmt->execute();
+                $log_stmt->close();
+                
+                $success = "Product stock updated successfully.";
+            } else {
+                $error = "Failed to update product stock.";
+            }
+            $stmt->close();
+        }
+    }
+}
+
+// Handle delete category stock item - Admin only
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_category_stock' && isset($_POST['category_id']) && is_numeric($_POST['category_id'])) {
     if ($_SESSION['user_role'] !== 'admin') {
         $error = 'You do not have permission to delete stock items.';
     } else {
         $deleteId = intval($_POST['category_id']);
         
-        // Check if category has stock or purchase history
         $check_stock = $conn->prepare("SELECT total_quantity, category_name FROM category WHERE id = ?");
         $check_stock->bind_param("i", $deleteId);
         $check_stock->execute();
@@ -216,7 +379,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         if ($category['total_quantity'] > 0) {
             $error = "Cannot delete. Category still has stock: " . number_format($category['total_quantity'], 2) . " PCS";
         } else {
-            // Check if category is used in purchases
             $check_purchases = $conn->prepare("SELECT id FROM purchase_item WHERE cat_id = ? LIMIT 1");
             $check_purchases->bind_param("i", $deleteId);
             $check_purchases->execute();
@@ -229,16 +391,63 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 $stmt->bind_param("i", $deleteId);
                 
                 if ($stmt->execute()) {
-                    $log_desc = "Deleted stock item: " . $category['category_name'];
+                    $log_desc = "Deleted stock category: " . $category['category_name'];
                     $log_query = "INSERT INTO activity_log (user_id, action, description) VALUES (?, 'delete', ?)";
                     $log_stmt = $conn->prepare($log_query);
                     $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
                     $log_stmt->execute();
                     $log_stmt->close();
                     
-                    $success = "Stock item deleted successfully.";
+                    $success = "Stock category deleted successfully.";
                 } else {
-                    $error = "Failed to delete stock item.";
+                    $error = "Failed to delete stock category.";
+                }
+                $stmt->close();
+            }
+            $check_purchases->close();
+        }
+        $check_stock->close();
+    }
+}
+
+// Handle delete product stock item - Admin only
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_product_stock' && isset($_POST['product_id']) && is_numeric($_POST['product_id'])) {
+    if ($_SESSION['user_role'] !== 'admin') {
+        $error = 'You do not have permission to delete stock items.';
+    } else {
+        $deleteId = intval($_POST['product_id']);
+        
+        $check_stock = $conn->prepare("SELECT stock_quantity, product_name FROM product WHERE id = ?");
+        $check_stock->bind_param("i", $deleteId);
+        $check_stock->execute();
+        $result = $check_stock->get_result();
+        $product = $result->fetch_assoc();
+        
+        if ($product['stock_quantity'] > 0) {
+            $error = "Cannot delete. Product still has stock: " . number_format($product['stock_quantity'], 2) . " " . strtoupper($product['primary_unit'] ?? 'pcs');
+        } else {
+            $check_purchases = $conn->prepare("SELECT id FROM purchase_item WHERE product_id = ? LIMIT 1");
+            $check_purchases->bind_param("i", $deleteId);
+            $check_purchases->execute();
+            $check_purchases->store_result();
+            
+            if ($check_purchases->num_rows > 0) {
+                $error = "Cannot delete. Product has purchase history.";
+            } else {
+                $stmt = $conn->prepare("DELETE FROM product WHERE id = ?");
+                $stmt->bind_param("i", $deleteId);
+                
+                if ($stmt->execute()) {
+                    $log_desc = "Deleted product stock: " . $product['product_name'];
+                    $log_query = "INSERT INTO activity_log (user_id, action, description) VALUES (?, 'delete', ?)";
+                    $log_stmt = $conn->prepare($log_query);
+                    $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
+                    $log_stmt->execute();
+                    $log_stmt->close();
+                    
+                    $success = "Product stock deleted successfully.";
+                } else {
+                    $error = "Failed to delete product stock.";
                 }
                 $stmt->close();
             }
@@ -250,33 +459,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
 // Filters
 $filterStock = $_GET['filter_stock'] ?? '';
+$filterType = $_GET['filter_type'] ?? 'all'; // all, category, product
 $filterCategory = $_GET['filter_category'] ?? '';
+$filterProduct = $_GET['filter_product'] ?? '';
 
-$where = "1=1";
-$params = [];
-$types = "";
+// Get categories (preforms)
+$cat_where = "1=1";
+$cat_params = [];
+$cat_types = "";
 
 if ($filterStock === 'critical') {
-    $where .= " AND total_quantity <= (min_stock_level * 0.25) AND min_stock_level > 0";
+    $cat_where .= " AND total_quantity <= (min_stock_level * 0.25) AND min_stock_level > 0";
 } elseif ($filterStock === 'low') {
-    $where .= " AND total_quantity <= min_stock_level AND total_quantity > (min_stock_level * 0.25) AND min_stock_level > 0";
+    $cat_where .= " AND total_quantity <= min_stock_level AND total_quantity > (min_stock_level * 0.25) AND min_stock_level > 0";
 } elseif ($filterStock === 'normal') {
-    $where .= " AND total_quantity > min_stock_level AND min_stock_level > 0";
+    $cat_where .= " AND total_quantity > min_stock_level AND min_stock_level > 0";
 } elseif ($filterStock === 'overstock') {
-    $where .= " AND total_quantity > (min_stock_level * 2) AND min_stock_level > 0";
+    $cat_where .= " AND total_quantity > (min_stock_level * 2) AND min_stock_level > 0";
 } elseif ($filterStock === 'zero') {
-    $where .= " AND total_quantity <= 0";
+    $cat_where .= " AND total_quantity <= 0";
 } elseif ($filterStock === 'no_min') {
-    $where .= " AND (min_stock_level IS NULL OR min_stock_level = 0)";
+    $cat_where .= " AND (min_stock_level IS NULL OR min_stock_level = 0)";
 }
 
 if ($filterCategory && $filterCategory !== 'all') {
-    $where .= " AND category_name LIKE ?";
-    $params[] = "%$filterCategory%";
-    $types .= "s";
+    $cat_where .= " AND category_name LIKE ?";
+    $cat_params[] = "%$filterCategory%";
+    $cat_types .= "s";
 }
 
-$sql = "SELECT * FROM category WHERE $where ORDER BY 
+$cat_sql = "SELECT *, 'category' as stock_type FROM category WHERE $cat_where ORDER BY 
         CASE 
             WHEN total_quantity <= min_stock_level AND min_stock_level > 0 THEN 1
             WHEN total_quantity <= 0 THEN 2
@@ -284,27 +496,136 @@ $sql = "SELECT * FROM category WHERE $where ORDER BY
         END, 
         (total_quantity / NULLIF(min_stock_level, 0)) ASC";
 
-if ($params) {
-    $stmt = $conn->prepare($sql);
-    $stmt->bind_param($types, ...$params);
-    $stmt->execute();
-    $categories = $stmt->get_result();
+if ($cat_params) {
+    $cat_stmt = $conn->prepare($cat_sql);
+    $cat_stmt->bind_param($cat_types, ...$cat_params);
+    $cat_stmt->execute();
+    $categories = $cat_stmt->get_result();
 } else {
-    $categories = $conn->query($sql);
+    $categories = $conn->query($cat_sql);
 }
 
-// Stats
-$totalItems = $conn->query("SELECT COUNT(*) as cnt FROM category")->fetch_assoc()['cnt'];
-$totalStock = $conn->query("SELECT COALESCE(SUM(total_quantity), 0) as total FROM category")->fetch_assoc()['total'];
-$totalValue = $conn->query("SELECT COALESCE(SUM(purchase_price * total_quantity), 0) as total FROM category")->fetch_assoc()['total'];
+// Get products (finished goods)
+$prod_where = "1=1";
+$prod_params = [];
+$prod_types = "";
 
-// Stock level counts
-$criticalCount = $conn->query("SELECT COUNT(*) as cnt FROM category WHERE total_quantity <= (min_stock_level * 0.25) AND min_stock_level > 0")->fetch_assoc()['cnt'];
-$lowCount = $conn->query("SELECT COUNT(*) as cnt FROM category WHERE total_quantity <= min_stock_level AND total_quantity > (min_stock_level * 0.25) AND min_stock_level > 0")->fetch_assoc()['cnt'];
-$normalCount = $conn->query("SELECT COUNT(*) as cnt FROM category WHERE total_quantity > min_stock_level AND min_stock_level > 0")->fetch_assoc()['cnt'];
-$overstockCount = $conn->query("SELECT COUNT(*) as cnt FROM category WHERE total_quantity > (min_stock_level * 2) AND min_stock_level > 0")->fetch_assoc()['cnt'];
-$zeroCount = $conn->query("SELECT COUNT(*) as cnt FROM category WHERE total_quantity <= 0")->fetch_assoc()['cnt'];
-$noMinCount = $conn->query("SELECT COUNT(*) as cnt FROM category WHERE min_stock_level IS NULL OR min_stock_level = 0")->fetch_assoc()['cnt'];
+if ($filterStock === 'critical') {
+    $prod_where .= " AND stock_quantity <= (min_stock_level * 0.25) AND min_stock_level > 0";
+} elseif ($filterStock === 'low') {
+    $prod_where .= " AND stock_quantity <= min_stock_level AND stock_quantity > (min_stock_level * 0.25) AND min_stock_level > 0";
+} elseif ($filterStock === 'normal') {
+    $prod_where .= " AND stock_quantity > min_stock_level AND min_stock_level > 0";
+} elseif ($filterStock === 'overstock') {
+    $prod_where .= " AND stock_quantity > (min_stock_level * 2) AND min_stock_level > 0";
+} elseif ($filterStock === 'zero') {
+    $prod_where .= " AND stock_quantity <= 0";
+} elseif ($filterStock === 'no_min') {
+    $prod_where .= " AND (min_stock_level IS NULL OR min_stock_level = 0)";
+}
+
+if ($filterProduct && $filterProduct !== 'all') {
+    $prod_where .= " AND product_name LIKE ?";
+    $prod_params[] = "%$filterProduct%";
+    $prod_types .= "s";
+}
+
+$prod_sql = "SELECT *, 'product' as stock_type, stock_quantity as total_quantity FROM product WHERE $prod_where ORDER BY 
+        CASE 
+            WHEN stock_quantity <= min_stock_level AND min_stock_level > 0 THEN 1
+            WHEN stock_quantity <= 0 THEN 2
+            ELSE 3
+        END, 
+        (stock_quantity / NULLIF(min_stock_level, 0)) ASC";
+
+if ($prod_params) {
+    $prod_stmt = $conn->prepare($prod_sql);
+    $prod_stmt->bind_param($prod_types, ...$prod_params);
+    $prod_stmt->execute();
+    $products = $prod_stmt->get_result();
+} else {
+    $products = $conn->query($prod_sql);
+}
+
+// Combine results based on filter type
+$all_items = [];
+if ($filterType === 'all' || $filterType === 'category') {
+    if ($categories && $categories->num_rows > 0) {
+        while ($row = $categories->fetch_assoc()) {
+            $all_items[] = $row;
+        }
+    }
+}
+if ($filterType === 'all' || $filterType === 'product') {
+    if ($products && $products->num_rows > 0) {
+        while ($row = $products->fetch_assoc()) {
+            $all_items[] = $row;
+        }
+    }
+}
+
+// Sort combined items by stock status
+usort($all_items, function($a, $b) {
+    $a_min = $a['min_stock_level'] ?? 0;
+    $b_min = $b['min_stock_level'] ?? 0;
+    $a_qty = $a['total_quantity'] ?? 0;
+    $b_qty = $b['total_quantity'] ?? 0;
+    
+    $a_ratio = $a_min > 0 ? $a_qty / $a_min : 999;
+    $b_ratio = $b_min > 0 ? $b_qty / $b_min : 999;
+    
+    if ($a_qty <= 0) return -1;
+    if ($b_qty <= 0) return 1;
+    if ($a_min > 0 && $a_qty <= $a_min) return -1;
+    if ($b_min > 0 && $b_qty <= $b_min) return 1;
+    
+    return $a_ratio <=> $b_ratio;
+});
+
+// Stats
+$result = $conn->query("SELECT COUNT(*) as cnt FROM category");
+$totalCategories = ($result && $row = $result->fetch_assoc()) ? $row['cnt'] : 0;
+
+$result = $conn->query("SELECT COUNT(*) as cnt FROM product");
+$totalProducts = ($result && $row = $result->fetch_assoc()) ? $row['cnt'] : 0;
+
+$result = $conn->query("SELECT COALESCE(SUM(total_quantity), 0) as total FROM category");
+$totalCategoryStock = ($result && $row = $result->fetch_assoc()) ? $row['total'] : 0;
+
+$result = $conn->query("SELECT COALESCE(SUM(stock_quantity), 0) as total FROM product");
+$totalProductStock = ($result && $row = $result->fetch_assoc()) ? $row['total'] : 0;
+
+$result = $conn->query("SELECT COALESCE(SUM(purchase_price * total_quantity), 0) as total FROM category");
+$totalCategoryValue = ($result && $row = $result->fetch_assoc()) ? $row['total'] : 0;
+
+$result = $conn->query("SELECT COALESCE(SUM(purchase_price * stock_quantity), 0) as total FROM product");
+$totalProductValue = ($result && $row = $result->fetch_assoc()) ? $row['total'] : 0;
+
+// Stock level counts for categories
+$result = $conn->query("SELECT COUNT(*) as cnt FROM category WHERE total_quantity <= (min_stock_level * 0.25) AND min_stock_level > 0");
+$catCriticalCount = ($result && $row = $result->fetch_assoc()) ? $row['cnt'] : 0;
+
+$result = $conn->query("SELECT COUNT(*) as cnt FROM category WHERE total_quantity <= min_stock_level AND total_quantity > (min_stock_level * 0.25) AND min_stock_level > 0");
+$catLowCount = ($result && $row = $result->fetch_assoc()) ? $row['cnt'] : 0;
+
+$result = $conn->query("SELECT COUNT(*) as cnt FROM category WHERE total_quantity > min_stock_level AND min_stock_level > 0");
+$catNormalCount = ($result && $row = $result->fetch_assoc()) ? $row['cnt'] : 0;
+
+$result = $conn->query("SELECT COUNT(*) as cnt FROM category WHERE total_quantity <= 0");
+$catZeroCount = ($result && $row = $result->fetch_assoc()) ? $row['cnt'] : 0;
+
+// Stock level counts for products
+$result = $conn->query("SELECT COUNT(*) as cnt FROM product WHERE stock_quantity <= (min_stock_level * 0.25) AND min_stock_level > 0");
+$prodCriticalCount = ($result && $row = $result->fetch_assoc()) ? $row['cnt'] : 0;
+
+$result = $conn->query("SELECT COUNT(*) as cnt FROM product WHERE stock_quantity <= min_stock_level AND stock_quantity > (min_stock_level * 0.25) AND min_stock_level > 0");
+$prodLowCount = ($result && $row = $result->fetch_assoc()) ? $row['cnt'] : 0;
+
+$result = $conn->query("SELECT COUNT(*) as cnt FROM product WHERE stock_quantity > min_stock_level AND min_stock_level > 0");
+$prodNormalCount = ($result && $row = $result->fetch_assoc()) ? $row['cnt'] : 0;
+
+$result = $conn->query("SELECT COUNT(*) as cnt FROM product WHERE stock_quantity <= 0");
+$prodZeroCount = ($result && $row = $result->fetch_assoc()) ? $row['cnt'] : 0;
 
 // Top 5 categories by value
 $topValueQuery = "SELECT category_name, (purchase_price * total_quantity) as stock_value 
@@ -314,8 +635,16 @@ $topValueQuery = "SELECT category_name, (purchase_price * total_quantity) as sto
                   LIMIT 5";
 $topValue = $conn->query($topValueQuery);
 
+// Top 5 products by value
+$topProductValueQuery = "SELECT product_name, primary_unit, (purchase_price * stock_quantity) as stock_value 
+                         FROM product 
+                         WHERE stock_quantity > 0 
+                         ORDER BY stock_value DESC 
+                         LIMIT 5";
+$topProductValue = $conn->query($topProductValueQuery);
+
 // Stock status helper
-function getStockStatus($current, $min) {
+function getStockStatus($current, $min, $type = 'category') {
     if ($current <= 0) {
         return ['class' => 'cancelled', 'text' => 'Out of Stock', 'icon' => 'bi-x-circle'];
     } elseif ($min <= 0) {
@@ -400,6 +729,24 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
             margin-right: 4px;
         }
         
+        .type-badge {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
+        }
+        
+        .type-badge.category {
+            background: #f0fdf4;
+            color: #16a34a;
+        }
+        
+        .type-badge.product {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+        
         .quick-stock-form {
             display: flex;
             gap: 5px;
@@ -468,6 +815,21 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
         .filter-badge.normal { background: #e0f2e7; color: #10b981; }
         .filter-badge.overstock { background: #e0e7ff; color: #6366f1; }
         .filter-badge.zero { background: #f1f5f9; color: #64748b; }
+        
+        /* Type Filter Buttons */
+        .type-filter-btn {
+            padding: 6px 14px;
+            border-radius: 30px;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        
+        .type-filter-btn.active {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
         
         /* View Modal Styles */
         .info-grid-view {
@@ -579,12 +941,15 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
             <div class="d-flex align-items-center justify-content-between flex-wrap gap-3 mb-4">
                 <div>
                     <h4 class="fw-bold mb-1" style="color: var(--text-primary);">Stock Levels</h4>
-                    <p style="font-size: 14px; color: var(--text-muted); margin: 0;">Monitor and manage inventory stock levels</p>
+                    <p style="font-size: 14px; color: var(--text-muted); margin: 0;">Monitor and manage inventory stock levels for preforms and finished goods</p>
                 </div>
                 <?php if ($is_admin): ?>
                     <div class="d-flex gap-2">
                         <a href="categories.php" class="btn-outline-custom">
                             <i class="bi bi-tags"></i> Manage Categories
+                        </a>
+                        <a href="products.php" class="btn-outline-custom">
+                            <i class="bi bi-box-seam"></i> Manage Products
                         </a>
                     </div>
                 <?php else: ?>
@@ -618,7 +983,8 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                             </div>
                             <div class="stat-info">
                                 <div class="stat-label">Total Items</div>
-                                <div class="stat-value" data-testid="stat-value-items"><?php echo $totalItems; ?></div>
+                                <div class="stat-value" data-testid="stat-value-items"><?php echo $totalCategories + $totalProducts; ?></div>
+                                <div class="stat-sub"><?php echo $totalCategories; ?> Categories | <?php echo $totalProducts; ?> Products</div>
                             </div>
                         </div>
                     </div>
@@ -631,7 +997,8 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                             </div>
                             <div class="stat-info">
                                 <div class="stat-label">Total Stock</div>
-                                <div class="stat-value" data-testid="stat-value-stock"><?php echo number_format($totalStock, 2); ?> PCS</div>
+                                <div class="stat-value" data-testid="stat-value-stock"><?php echo number_format($totalCategoryStock + $totalProductStock, 2); ?></div>
+                                <div class="stat-sub"><?php echo number_format($totalCategoryStock, 2); ?> PCS (Cat) | <?php echo number_format($totalProductStock, 2); ?> (Prod)</div>
                             </div>
                         </div>
                     </div>
@@ -644,7 +1011,8 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                             </div>
                             <div class="stat-info">
                                 <div class="stat-label">Stock Value</div>
-                                <div class="stat-value" data-testid="stat-value-value">₹<?php echo number_format($totalValue, 2); ?></div>
+                                <div class="stat-value" data-testid="stat-value-value">₹<?php echo number_format($totalCategoryValue + $totalProductValue, 2); ?></div>
+                                <div class="stat-sub">Cat: ₹<?php echo number_format($totalCategoryValue, 2); ?> | Prod: ₹<?php echo number_format($totalProductValue, 2); ?></div>
                             </div>
                         </div>
                     </div>
@@ -657,7 +1025,8 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                             </div>
                             <div class="stat-info">
                                 <div class="stat-label">Stock Alerts</div>
-                                <div class="stat-value" data-testid="stat-value-alerts"><?php echo $criticalCount + $lowCount; ?></div>
+                                <div class="stat-value" data-testid="stat-value-alerts"><?php echo $catCriticalCount + $catLowCount + $prodCriticalCount + $prodLowCount; ?></div>
+                                <div class="stat-sub">Cat: <?php echo $catCriticalCount + $catLowCount; ?> | Prod: <?php echo $prodCriticalCount + $prodLowCount; ?></div>
                             </div>
                         </div>
                     </div>
@@ -666,54 +1035,64 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
 
             <!-- Stock Status Summary -->
             <div class="row g-3 mb-4">
-                <div class="col-md-8">
+                <div class="col-md-12">
                     <div class="dashboard-card">
                         <div class="card-body">
-                            <div class="row g-2 text-center">
-                                <div class="col-4 col-md">
-                                    <div class="filter-badge critical mb-1">
-                                        <i class="bi bi-exclamation-triangle me-1"></i> <?php echo $criticalCount; ?>
+                            <div class="row g-2">
+                                <div class="col-md-6">
+                                    <h6 class="fw-semibold mb-2"><span class="type-badge category">Categories (Preforms)</span></h6>
+                                    <div class="row g-2 text-center">
+                                        <div class="col">
+                                            <div class="filter-badge critical mb-1"><i class="bi bi-exclamation-triangle me-1"></i> <?php echo $catCriticalCount; ?></div>
+                                            <div class="value-muted">Critical</div>
+                                        </div>
+                                        <div class="col">
+                                            <div class="filter-badge low mb-1"><i class="bi bi-exclamation-diamond me-1"></i> <?php echo $catLowCount; ?></div>
+                                            <div class="value-muted">Low</div>
+                                        </div>
+                                        <div class="col">
+                                            <div class="filter-badge normal mb-1"><i class="bi bi-check-circle me-1"></i> <?php echo $catNormalCount; ?></div>
+                                            <div class="value-muted">Normal</div>
+                                        </div>
+                                        <div class="col">
+                                            <div class="filter-badge zero mb-1"><i class="bi bi-x-circle me-1"></i> <?php echo $catZeroCount; ?></div>
+                                            <div class="value-muted">Zero</div>
+                                        </div>
                                     </div>
-                                    <div class="value-muted">Critical</div>
                                 </div>
-                                <div class="col-4 col-md">
-                                    <div class="filter-badge low mb-1">
-                                        <i class="bi bi-exclamation-diamond me-1"></i> <?php echo $lowCount; ?>
+                                <div class="col-md-6">
+                                    <h6 class="fw-semibold mb-2"><span class="type-badge product">Products (Finished Goods)</span></h6>
+                                    <div class="row g-2 text-center">
+                                        <div class="col">
+                                            <div class="filter-badge critical mb-1"><i class="bi bi-exclamation-triangle me-1"></i> <?php echo $prodCriticalCount; ?></div>
+                                            <div class="value-muted">Critical</div>
+                                        </div>
+                                        <div class="col">
+                                            <div class="filter-badge low mb-1"><i class="bi bi-exclamation-diamond me-1"></i> <?php echo $prodLowCount; ?></div>
+                                            <div class="value-muted">Low</div>
+                                        </div>
+                                        <div class="col">
+                                            <div class="filter-badge normal mb-1"><i class="bi bi-check-circle me-1"></i> <?php echo $prodNormalCount; ?></div>
+                                            <div class="value-muted">Normal</div>
+                                        </div>
+                                        <div class="col">
+                                            <div class="filter-badge zero mb-1"><i class="bi bi-x-circle me-1"></i> <?php echo $prodZeroCount; ?></div>
+                                            <div class="value-muted">Zero</div>
+                                        </div>
                                     </div>
-                                    <div class="value-muted">Low</div>
-                                </div>
-                                <div class="col-4 col-md">
-                                    <div class="filter-badge normal mb-1">
-                                        <i class="bi bi-check-circle me-1"></i> <?php echo $normalCount; ?>
-                                    </div>
-                                    <div class="value-muted">Normal</div>
-                                </div>
-                                <div class="col-4 col-md">
-                                    <div class="filter-badge overstock mb-1">
-                                        <i class="bi bi-box me-1"></i> <?php echo $overstockCount; ?>
-                                    </div>
-                                    <div class="value-muted">Overstock</div>
-                                </div>
-                                <div class="col-4 col-md">
-                                    <div class="filter-badge zero mb-1">
-                                        <i class="bi bi-x-circle me-1"></i> <?php echo $zeroCount; ?>
-                                    </div>
-                                    <div class="value-muted">Zero</div>
-                                </div>
-                                <div class="col-4 col-md">
-                                    <div class="filter-badge mb-1">
-                                        <i class="bi bi-dash-circle me-1"></i> <?php echo $noMinCount; ?>
-                                    </div>
-                                    <div class="value-muted">No Min</div>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
-                <div class="col-md-4">
+            </div>
+
+            <!-- Top Values Row -->
+            <div class="row g-3 mb-4">
+                <div class="col-md-6">
                     <div class="dashboard-card">
                         <div class="card-body">
-                            <h6 class="fw-semibold mb-2">Top 5 by Value</h6>
+                            <h6 class="fw-semibold mb-2">Top Categories by Value</h6>
                             <?php if ($topValue && $topValue->num_rows > 0): ?>
                                 <?php while ($item = $topValue->fetch_assoc()): ?>
                                     <div class="d-flex justify-content-between align-items-center mb-1">
@@ -722,9 +1101,47 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                     </div>
                                 <?php endwhile; ?>
                             <?php else: ?>
-                                <div class="value-muted text-center">No data available</div>
+                                <div class="value-muted text-center">No category stock data available</div>
                             <?php endif; ?>
                         </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="dashboard-card">
+                        <div class="card-body">
+                            <h6 class="fw-semibold mb-2">Top Products by Value</h6>
+                            <?php if ($topProductValue && $topProductValue->num_rows > 0): ?>
+                                <?php while ($item = $topProductValue->fetch_assoc()): ?>
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <span class="value-muted"><?php echo htmlspecialchars($item['product_name']); ?> (<?php echo $item['primary_unit']; ?>)</span>
+                                        <span class="fw-semibold">₹<?php echo number_format($item['stock_value'], 2); ?></span>
+                                    </div>
+                                <?php endwhile; ?>
+                            <?php else: ?>
+                                <div class="value-muted text-center">No product stock data available</div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Type Filter Buttons -->
+            <div class="dashboard-card mb-4">
+                <div class="card-body py-3">
+                    <div class="d-flex align-items-center gap-3 flex-wrap">
+                        <span class="text-muted">Show:</span>
+                        <a href="stocks.php?filter_type=all<?php echo $filterStock ? '&filter_stock='.$filterStock : ''; ?>" 
+                           class="btn btn-sm type-filter-btn <?php echo $filterType === 'all' ? 'active' : 'btn-outline-secondary'; ?>">
+                            <i class="bi bi-grid-3x3-gap-fill me-1"></i> All Items
+                        </a>
+                        <a href="stocks.php?filter_type=category<?php echo $filterStock ? '&filter_stock='.$filterStock : ''; ?>" 
+                           class="btn btn-sm type-filter-btn <?php echo $filterType === 'category' ? 'active' : 'btn-outline-secondary'; ?>">
+                            <i class="bi bi-layers me-1"></i> Categories (Preforms)
+                        </a>
+                        <a href="stocks.php?filter_type=product<?php echo $filterStock ? '&filter_stock='.$filterStock : ''; ?>" 
+                           class="btn btn-sm type-filter-btn <?php echo $filterType === 'product' ? 'active' : 'btn-outline-secondary'; ?>">
+                            <i class="bi bi-box-seam me-1"></i> Products (Finished Goods)
+                        </a>
                     </div>
                 </div>
             </div>
@@ -734,27 +1151,24 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                 <div class="card-body py-3">
                     <div class="d-flex align-items-center gap-3 flex-wrap filter-bar-inner">
                         <div class="d-flex gap-1 flex-wrap filter-tabs">
-                            <a href="stocks.php" class="btn btn-sm <?php echo !$filterStock ? 'btn-primary' : 'btn-outline-secondary'; ?>" data-testid="filter-all">
-                                All <span class="badge bg-white text-dark ms-1"><?php echo $totalItems; ?></span>
+                            <a href="stocks.php?filter_type=<?php echo $filterType; ?>" class="btn btn-sm <?php echo !$filterStock ? 'btn-primary' : 'btn-outline-secondary'; ?>" data-testid="filter-all">
+                                All <span class="badge bg-white text-dark ms-1"><?php echo count($all_items); ?></span>
                             </a>
-                            <a href="stocks.php?filter_stock=critical" class="btn btn-sm <?php echo $filterStock === 'critical' ? 'btn-danger' : 'btn-outline-secondary'; ?>" data-testid="filter-critical">
-                                Critical <span class="badge bg-white text-dark ms-1"><?php echo $criticalCount; ?></span>
+                            <a href="stocks.php?filter_stock=critical&filter_type=<?php echo $filterType; ?>" class="btn btn-sm <?php echo $filterStock === 'critical' ? 'btn-danger' : 'btn-outline-secondary'; ?>" data-testid="filter-critical">
+                                Critical <span class="badge bg-white text-dark ms-1"><?php echo (($filterType === 'category' || $filterType === 'all') ? $catCriticalCount : 0) + (($filterType === 'product' || $filterType === 'all') ? $prodCriticalCount : 0); ?></span>
                             </a>
-                            <a href="stocks.php?filter_stock=low" class="btn btn-sm <?php echo $filterStock === 'low' ? 'btn-warning' : 'btn-outline-secondary'; ?>" data-testid="filter-low">
-                                Low <span class="badge bg-white text-dark ms-1"><?php echo $lowCount; ?></span>
+                            <a href="stocks.php?filter_stock=low&filter_type=<?php echo $filterType; ?>" class="btn btn-sm <?php echo $filterStock === 'low' ? 'btn-warning' : 'btn-outline-secondary'; ?>" data-testid="filter-low">
+                                Low <span class="badge bg-white text-dark ms-1"><?php echo (($filterType === 'category' || $filterType === 'all') ? $catLowCount : 0) + (($filterType === 'product' || $filterType === 'all') ? $prodLowCount : 0); ?></span>
                             </a>
-                            <a href="stocks.php?filter_stock=normal" class="btn btn-sm <?php echo $filterStock === 'normal' ? 'btn-success' : 'btn-outline-secondary'; ?>" data-testid="filter-normal">
-                                Normal <span class="badge bg-white text-dark ms-1"><?php echo $normalCount; ?></span>
+                            <a href="stocks.php?filter_stock=normal&filter_type=<?php echo $filterType; ?>" class="btn btn-sm <?php echo $filterStock === 'normal' ? 'btn-success' : 'btn-outline-secondary'; ?>" data-testid="filter-normal">
+                                Normal <span class="badge bg-white text-dark ms-1"><?php echo (($filterType === 'category' || $filterType === 'all') ? $catNormalCount : 0) + (($filterType === 'product' || $filterType === 'all') ? $prodNormalCount : 0); ?></span>
                             </a>
-                            <a href="stocks.php?filter_stock=overstock" class="btn btn-sm <?php echo $filterStock === 'overstock' ? 'btn-info' : 'btn-outline-secondary'; ?>" data-testid="filter-overstock">
-                                Overstock <span class="badge bg-white text-dark ms-1"><?php echo $overstockCount; ?></span>
-                            </a>
-                            <a href="stocks.php?filter_stock=zero" class="btn btn-sm <?php echo $filterStock === 'zero' ? 'btn-secondary' : 'btn-outline-secondary'; ?>" data-testid="filter-zero">
-                                Zero Stock <span class="badge bg-white text-dark ms-1"><?php echo $zeroCount; ?></span>
+                            <a href="stocks.php?filter_stock=zero&filter_type=<?php echo $filterType; ?>" class="btn btn-sm <?php echo $filterStock === 'zero' ? 'btn-secondary' : 'btn-outline-secondary'; ?>" data-testid="filter-zero">
+                                Zero Stock <span class="badge bg-white text-dark ms-1"><?php echo (($filterType === 'category' || $filterType === 'all') ? $catZeroCount : 0) + (($filterType === 'product' || $filterType === 'all') ? $prodZeroCount : 0); ?></span>
                             </a>
                         </div>
                         <div class="ms-auto">
-                            <a href="stocks.php" class="btn btn-sm btn-outline-secondary" data-testid="clear-filters">
+                            <a href="stocks.php?filter_type=<?php echo $filterType; ?>" class="btn btn-sm btn-outline-secondary" data-testid="clear-filters">
                                 <i class="bi bi-x-circle"></i> Clear Filters
                             </a>
                         </div>
@@ -767,9 +1181,11 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                 <div class="desktop-table" style="overflow-x: auto;">
                     <table class="table-custom" id="stockTable">
                         <thead>
-                            <tr>
+                             <tr>
                                 <th>#</th>
-                                <th>Category</th>
+                                <th>Type</th>
+                                <th>Item Name</th>
+                                <th>Unit/Details</th>
                                 <th>Purchase Price</th>
                                 <th>Current Stock</th>
                                 <th>Min Stock Level</th>
@@ -779,32 +1195,55 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                     <th style="text-align: center;">Quick Update</th>
                                     <th style="text-align: center;">Actions</th>
                                 <?php endif; ?>
-                            </tr>
+                             </tr>
                         </thead>
                         <tbody>
-                            <?php if ($categories && $categories->num_rows > 0): ?>
-                                <?php while ($item = $categories->fetch_assoc()): 
-                                    $stock_status = getStockStatus($item['total_quantity'], $item['min_stock_level']);
-                                    $stock_percentage = $item['min_stock_level'] > 0 ? min(($item['total_quantity'] / $item['min_stock_level']) * 100, 200) : 100;
+                            <?php if (count($all_items) > 0): ?>
+                                <?php foreach ($all_items as $index => $item): 
+                                    $is_category = ($item['stock_type'] === 'category');
+                                    $item_name = $is_category ? $item['category_name'] : $item['product_name'];
+                                    $current_stock = $item['total_quantity'] ?? 0;
+                                    $min_stock = $item['min_stock_level'] ?? 0;
+                                    $purchase_price = $item['purchase_price'] ?? 0;
+                                    $stock_status = getStockStatus($current_stock, $min_stock, $is_category ? 'category' : 'product');
+                                    $stock_percentage = $min_stock > 0 ? min(($current_stock / $min_stock) * 100, 200) : 100;
                                     $bar_class = $stock_status['class'] === 'cancelled' ? 'critical' : 
                                                 ($stock_status['class'] === 'pending' ? 'low' : 
                                                 ($stock_status['class'] === 'info' ? 'overstock' : 'normal'));
+                                    $type_badge_class = $is_category ? 'category' : 'product';
+                                    $type_icon = $is_category ? 'bi-layers' : 'bi-box-seam';
+                                    $type_label = $is_category ? 'Category' : 'Product';
+                                    
+                                    if ($is_category) {
+                                        $details = $item['gram_value'] > 0 ? $item['gram_value'] . ' g/pc' : 'Preform';
+                                        $unit = 'PCS';
+                                    } else {
+                                        $details = $item['product_type'] === 'direct' ? 'Direct Sale' : 'Converted Sale';
+                                        $unit = strtoupper($item['primary_unit'] ?? 'PCS');
+                                    }
                                 ?>
-                                    <tr data-testid="row-stock-<?php echo $item['id']; ?>" data-stock-id="<?php echo $item['id']; ?>">
+                                    <tr data-testid="row-stock-<?php echo $item['id']; ?>" data-stock-id="<?php echo $item['id']; ?>" data-stock-type="<?php echo $is_category ? 'category' : 'product'; ?>">
                                         <td><span class="order-id">#<?php echo $item['id']; ?></span></td>
-                                        <td class="fw-semibold"><?php echo htmlspecialchars($item['category_name']); ?></td>
-                                        <td class="value-highlight">₹<?php echo number_format($item['purchase_price'], 2); ?></td>
+                                        <td>
+                                            <span class="type-badge <?php echo $type_badge_class; ?>">
+                                                <i class="bi <?php echo $type_icon; ?> me-1"></i>
+                                                <?php echo $type_label; ?>
+                                            </span>
+                                        </td>
+                                        <td class="fw-semibold"><?php echo htmlspecialchars($item_name); ?></td>
+                                        <td class="value-muted"><?php echo htmlspecialchars($details); ?></td>
+                                        <td class="value-highlight">₹<?php echo number_format($purchase_price, 2); ?> / <?php echo $unit; ?></td>
                                         <td>
                                             <div class="stock-bar-container">
-                                                <span class="fw-semibold stock-quantity"><?php echo number_format($item['total_quantity'], 2); ?> PCS</span>
+                                                <span class="fw-semibold stock-quantity"><?php echo number_format($current_stock, 2); ?> <?php echo $unit; ?></span>
                                                 <div class="stock-bar" title="<?php echo $stock_percentage; ?>% of minimum">
                                                     <div class="stock-bar-fill <?php echo $bar_class; ?>" style="width: <?php echo min($stock_percentage, 100); ?>%;"></div>
                                                 </div>
                                             </div>
                                         </td>
                                         <td>
-                                            <?php if ($item['min_stock_level'] > 0): ?>
-                                                <span class="value-muted"><?php echo number_format($item['min_stock_level'], 2); ?> PCS</span>
+                                            <?php if ($min_stock > 0): ?>
+                                                <span class="value-muted"><?php echo number_format($min_stock, 2); ?> <?php echo $unit; ?></span>
                                             <?php else: ?>
                                                 <span class="text-muted">Not set</span>
                                             <?php endif; ?>
@@ -818,25 +1257,25 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                         <td>
                                             <span class="stock-value-badge">
                                                 <i class="bi bi-currency-rupee"></i>
-                                                <?php echo number_format($item['purchase_price'] * $item['total_quantity'], 2); ?>
+                                                <?php echo number_format($purchase_price * $current_stock, 2); ?>
                                             </span>
                                         </td>
                                         
                                         <?php if ($is_admin): ?>
                                             <td>
                                                 <div class="quick-stock-form">
-                                                    <form method="POST" action="stocks.php<?php echo $filterStock ? '?filter_stock='.$filterStock : ''; ?>" style="display: flex; gap: 5px;" onsubmit="return validateStockForm(this)">
-                                                        <input type="hidden" name="action" value="update_stock">
-                                                        <input type="hidden" name="category_id" value="<?php echo $item['id']; ?>">
+                                                    <form method="POST" action="stocks.php<?php echo $filterStock ? '?filter_stock='.$filterStock.'&filter_type='.$filterType : '?filter_type='.$filterType; ?>" style="display: flex; gap: 5px;" onsubmit="return validateStockForm(this)">
+                                                        <input type="hidden" name="action" value="<?php echo $is_category ? 'update_category_stock' : 'update_product_stock'; ?>">
+                                                        <input type="hidden" name="<?php echo $is_category ? 'category_id' : 'product_id'; ?>" value="<?php echo $item['id']; ?>">
                                                         <input type="hidden" name="operation" value="add">
                                                         <input type="number" name="stock_change" class="quick-stock-input" placeholder="Qty" step="0.001" min="0.001" required>
                                                         <button type="submit" class="quick-stock-btn add" title="Add Stock">
                                                             <i class="bi bi-plus"></i>
                                                         </button>
                                                     </form>
-                                                    <form method="POST" action="stocks.php<?php echo $filterStock ? '?filter_stock='.$filterStock : ''; ?>" style="display: flex; gap: 5px;" onsubmit="return validateStockForm(this)">
-                                                        <input type="hidden" name="action" value="update_stock">
-                                                        <input type="hidden" name="category_id" value="<?php echo $item['id']; ?>">
+                                                    <form method="POST" action="stocks.php<?php echo $filterStock ? '?filter_stock='.$filterStock.'&filter_type='.$filterType : '?filter_type='.$filterType; ?>" style="display: flex; gap: 5px;" onsubmit="return validateStockForm(this)">
+                                                        <input type="hidden" name="action" value="<?php echo $is_category ? 'update_category_stock' : 'update_product_stock'; ?>">
+                                                        <input type="hidden" name="<?php echo $is_category ? 'category_id' : 'product_id'; ?>" value="<?php echo $item['id']; ?>">
                                                         <input type="hidden" name="operation" value="subtract">
                                                         <input type="number" name="stock_change" class="quick-stock-input" placeholder="Qty" step="0.001" min="0.001" required>
                                                         <button type="submit" class="quick-stock-btn subtract" title="Remove Stock">
@@ -847,22 +1286,19 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                             </td>
                                             <td>
                                                 <div class="action-buttons">
-                                                    <!-- View Button -->
-                                                    <button class="action-btn view" onclick="viewStockItem(<?php echo $item['id']; ?>)" title="View Details">
+                                                    <button class="action-btn view" onclick="viewStockItem(<?php echo $item['id']; ?>, '<?php echo $is_category ? 'category' : 'product'; ?>')" title="View Details">
                                                         <i class="bi bi-eye"></i>
                                                     </button>
                                                     
-                                                    <!-- Edit Button -->
                                                     <button class="action-btn edit" data-bs-toggle="modal" data-bs-target="#editStockModal<?php echo $item['id']; ?>" title="Edit Item">
                                                         <i class="bi bi-pencil"></i>
                                                     </button>
                                                     
-                                                    <!-- Delete Button (only if zero stock) -->
-                                                    <?php if ($item['total_quantity'] <= 0): ?>
-                                                        <form method="POST" action="stocks.php<?php echo $filterStock ? '?filter_stock='.$filterStock : ''; ?>" style="display: inline;" 
+                                                    <?php if ($current_stock <= 0): ?>
+                                                        <form method="POST" action="stocks.php<?php echo $filterStock ? '?filter_stock='.$filterStock.'&filter_type='.$filterType : '?filter_type='.$filterType; ?>" style="display: inline;" 
                                                               onsubmit="return confirm('Are you sure you want to delete this stock item? This action cannot be undone.')">
-                                                            <input type="hidden" name="action" value="delete_stock">
-                                                            <input type="hidden" name="category_id" value="<?php echo $item['id']; ?>">
+                                                            <input type="hidden" name="action" value="<?php echo $is_category ? 'delete_category_stock' : 'delete_product_stock'; ?>">
+                                                            <input type="hidden" name="<?php echo $is_category ? 'category_id' : 'product_id'; ?>" value="<?php echo $item['id']; ?>">
                                                             <button type="submit" class="action-btn delete" title="Delete Item">
                                                                 <i class="bi bi-trash"></i>
                                                             </button>
@@ -877,36 +1313,59 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                     <div class="modal fade" id="editStockModal<?php echo $item['id']; ?>" tabindex="-1" aria-hidden="true">
                                         <div class="modal-dialog">
                                             <div class="modal-content">
-                                                <form method="POST" action="stocks.php<?php echo $filterStock ? '?filter_stock='.$filterStock : ''; ?>">
-                                                    <input type="hidden" name="action" value="edit_stock">
-                                                    <input type="hidden" name="category_id" value="<?php echo $item['id']; ?>">
+                                                <form method="POST" action="stocks.php<?php echo $filterStock ? '?filter_stock='.$filterStock.'&filter_type='.$filterType : '?filter_type='.$filterType; ?>">
+                                                    <input type="hidden" name="action" value="<?php echo $is_category ? 'edit_category_stock' : 'edit_product_stock'; ?>">
+                                                    <input type="hidden" name="<?php echo $is_category ? 'category_id' : 'product_id'; ?>" value="<?php echo $item['id']; ?>">
                                                     
                                                     <div class="modal-header">
                                                         <h5 class="modal-title">
                                                             <i class="bi bi-pencil-square me-2"></i>
-                                                            Edit Stock Item
+                                                            Edit <?php echo $type_label; ?> Stock
                                                         </h5>
                                                         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                                                     </div>
                                                     
                                                     <div class="modal-body">
                                                         <div class="mb-3">
-                                                            <label class="form-label">Category Name <span class="text-danger">*</span></label>
-                                                            <input type="text" name="category_name" class="form-control" 
-                                                                   value="<?php echo htmlspecialchars($item['category_name']); ?>" required>
+                                                            <label class="form-label"><?php echo $is_category ? 'Category Name' : 'Product Name'; ?> <span class="text-danger">*</span></label>
+                                                            <input type="text" name="<?php echo $is_category ? 'category_name' : 'product_name'; ?>" class="form-control" 
+                                                                   value="<?php echo htmlspecialchars($item_name); ?>" required>
                                                         </div>
                                                         
-                                                        <div class="mb-3">
-                                                            <label class="form-label">Purchase Price (₹) <span class="text-danger">*</span></label>
-                                                            <div class="input-group">
-                                                                <span class="input-group-text">₹</span>
-                                                                <input type="number" name="purchase_price" class="form-control" 
-                                                                       step="0.01" min="0.01" value="<?php echo $item['purchase_price']; ?>" required>
+                                                        <?php if ($is_category): ?>
+                                                            <div class="mb-3">
+                                                                <label class="form-label">Gram Value (g/pc)</label>
+                                                                <input type="number" name="gram_value" class="form-control" 
+                                                                       step="0.001" min="0" value="<?php echo $item['gram_value']; ?>">
+                                                                <small class="text-muted">Weight per piece in grams</small>
                                                             </div>
-                                                        </div>
+                                                            <div class="mb-3">
+                                                                <label class="form-label">Purchase Price (₹) <span class="text-danger">*</span></label>
+                                                                <div class="input-group">
+                                                                    <span class="input-group-text">₹</span>
+                                                                    <input type="number" name="purchase_price" class="form-control" 
+                                                                           step="0.01" min="0.01" value="<?php echo $item['purchase_price']; ?>" required>
+                                                                </div>
+                                                                <small class="text-muted">Cost per piece</small>
+                                                            </div>
+                                                        <?php else: ?>
+                                                            <div class="mb-3">
+                                                                <label class="form-label">Product Type</label>
+                                                                <select name="product_type" class="form-select">
+                                                                    <option value="direct" <?php echo ($item['product_type'] ?? 'direct') === 'direct' ? 'selected' : ''; ?>>Direct Sale</option>
+                                                                    <option value="converted" <?php echo ($item['product_type'] ?? 'direct') === 'converted' ? 'selected' : ''; ?>>Converted Sale</option>
+                                                                </select>
+                                                            </div>
+                                                            <div class="mb-3">
+                                                                <label class="form-label">Primary Unit <span class="text-danger">*</span></label>
+                                                                <input type="text" name="primary_unit" class="form-control" 
+                                                                       value="<?php echo htmlspecialchars($item['primary_unit'] ?? 'pcs'); ?>" required>
+                                                                <small class="text-muted">e.g., pcs, bag, box, bottle</small>
+                                                            </div>
+                                                        <?php endif; ?>
                                                         
                                                         <div class="mb-3">
-                                                            <label class="form-label">Minimum Stock Level (PCS)</label>
+                                                            <label class="form-label">Minimum Stock Level</label>
                                                             <input type="number" name="min_stock_level" class="form-control" 
                                                                    step="0.001" min="0" value="<?php echo $item['min_stock_level']; ?>">
                                                             <small class="text-muted">Alert when stock falls below this level</small>
@@ -914,7 +1373,7 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                                         
                                                         <div class="mb-3">
                                                             <label class="form-label">Current Stock</label>
-                                                            <input type="text" class="form-control" value="<?php echo number_format($item['total_quantity'], 2); ?> PCS" readonly disabled>
+                                                            <input type="text" class="form-control" value="<?php echo number_format($current_stock, 2); ?> <?php echo $is_category ? 'PCS' : strtoupper($item['primary_unit'] ?? 'PCS'); ?>" readonly disabled>
                                                         </div>
                                                     </div>
                                                     
@@ -926,9 +1385,25 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                             </div>
                                         </div>
                                     </div>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
-                               
+                                <tr>
+                                    <td colspan="<?php echo $is_admin ? '11' : '10'; ?>" class="text-center py-5">
+                                        <i class="bi bi-boxes d-block mb-2" style="font-size: 48px; color: #cbd5e1;"></i>
+                                        <div style="font-size: 15px; font-weight: 500; margin-bottom: 4px;">No stock items found</div>
+                                        <div style="font-size: 13px; color: #64748b;">
+                                            <?php if ($filterStock): ?>
+                                                Try changing your filters or <a href="stocks.php?filter_type=<?php echo $filterType; ?>">view all stock</a>
+                                            <?php elseif ($filterType === 'category'): ?>
+                                                <a href="categories.php">Add categories</a> to start tracking preform stock
+                                            <?php elseif ($filterType === 'product'): ?>
+                                                <a href="products.php">Add products</a> to start tracking finished goods stock
+                                            <?php else: ?>
+                                                <a href="categories.php">Add categories</a> or <a href="products.php">products</a> to start tracking stock
+                                            <?php endif; ?>
+                                        </div>
+                                    </td>
+                                </tr>
                             <?php endif; ?>
                         </tbody>
                     </table>
@@ -936,121 +1411,146 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
 
                 <!-- Mobile Card View -->
                 <div class="mobile-cards" style="padding: 12px;">
-                    <?php
-                        // Reset result pointer for mobile view
-                        if ($categories && $categories->num_rows > 0) {
-                            $categories->data_seek(0);
+                    <?php foreach ($all_items as $item): 
+                        $is_category = ($item['stock_type'] === 'category');
+                        $item_name = $is_category ? $item['category_name'] : $item['product_name'];
+                        $current_stock = $item['total_quantity'] ?? 0;
+                        $min_stock = $item['min_stock_level'] ?? 0;
+                        $purchase_price = $item['purchase_price'] ?? 0;
+                        $stock_status = getStockStatus($current_stock, $min_stock, $is_category ? 'category' : 'product');
+                        $stock_percentage = $min_stock > 0 ? min(($current_stock / $min_stock) * 100, 200) : 100;
+                        $type_badge_class = $is_category ? 'category' : 'product';
+                        $type_icon = $is_category ? 'bi-layers' : 'bi-box-seam';
+                        $type_label = $is_category ? 'Category' : 'Product';
+                        
+                        if ($is_category) {
+                            $unit = 'PCS';
+                            $details = $item['gram_value'] > 0 ? $item['gram_value'] . ' g/pc' : 'Preform';
+                        } else {
+                            $unit = strtoupper($item['primary_unit'] ?? 'PCS');
+                            $details = $item['product_type'] === 'direct' ? 'Direct Sale' : 'Converted Sale';
                         }
                     ?>
-                    <?php if ($categories && $categories->num_rows > 0): ?>
-                        <?php while ($mItem = $categories->fetch_assoc()): 
-                            $stock_status = getStockStatus($mItem['total_quantity'], $mItem['min_stock_level']);
-                            $stock_percentage = $mItem['min_stock_level'] > 0 ? min(($mItem['total_quantity'] / $mItem['min_stock_level']) * 100, 200) : 100;
-                        ?>
-                            <div class="mobile-card" data-testid="mobile-card-stock-<?php echo $mItem['id']; ?>">
-                                <div class="mobile-card-header">
-                                    <div>
-                                        <span class="order-id">#<?php echo $mItem['id']; ?></span>
-                                        <span class="customer-name ms-2 fw-semibold"><?php echo htmlspecialchars($mItem['category_name']); ?></span>
-                                    </div>
+                        <div class="mobile-card" data-testid="mobile-card-stock-<?php echo $item['id']; ?>">
+                            <div class="mobile-card-header">
+                                <div>
+                                    <span class="order-id">#<?php echo $item['id']; ?></span>
+                                    <span class="customer-name ms-2 fw-semibold"><?php echo htmlspecialchars($item_name); ?></span>
+                                </div>
+                                <div class="d-flex gap-1">
+                                    <span class="type-badge <?php echo $type_badge_class; ?>">
+                                        <i class="bi <?php echo $type_icon; ?> me-1"></i>
+                                        <?php echo $type_label; ?>
+                                    </span>
                                     <span class="status-badge <?php echo $stock_status['class']; ?>">
                                         <i class="bi <?php echo $stock_status['icon']; ?> me-1"></i>
                                         <?php echo $stock_status['text']; ?>
                                     </span>
                                 </div>
-                                
-                                <div class="mobile-card-row">
-                                    <span class="mobile-card-label">Purchase Price</span>
-                                    <span class="mobile-card-value">₹<?php echo number_format($mItem['purchase_price'], 2); ?> / PCS</span>
-                                </div>
-                                
-                                <div class="mobile-card-row">
-                                    <span class="mobile-card-label">Current Stock</span>
-                                    <span class="mobile-card-value">
-                                        <span class="fw-semibold"><?php echo number_format($mItem['total_quantity'], 2); ?> PCS</span>
-                                        <div class="stock-bar mt-1" style="width: 100%;">
-                                            <div class="stock-bar-fill <?php echo $stock_status['class'] === 'cancelled' ? 'critical' : ($stock_status['class'] === 'pending' ? 'low' : 'normal'); ?>" 
-                                                 style="width: <?php echo min($stock_percentage, 100); ?>%;"></div>
-                                        </div>
-                                    </span>
-                                </div>
-                                
-                                <div class="mobile-card-row">
-                                    <span class="mobile-card-label">Min Stock Level</span>
-                                    <span class="mobile-card-value">
-                                        <?php if ($mItem['min_stock_level'] > 0): ?>
-                                            <?php echo number_format($mItem['min_stock_level'], 2); ?> PCS
-                                        <?php else: ?>
-                                            <span class="text-muted">Not set</span>
-                                        <?php endif; ?>
-                                    </span>
-                                </div>
-                                
-                                <div class="mobile-card-row">
-                                    <span class="mobile-card-label">Stock Value</span>
-                                    <span class="mobile-card-value fw-semibold" style="color: var(--primary);">
-                                        ₹<?php echo number_format($mItem['purchase_price'] * $mItem['total_quantity'], 2); ?>
-                                    </span>
-                                </div>
-                                
-                                <?php if ($is_admin): ?>
-                                    <div class="mobile-card-actions flex-column">
-                                        <div class="d-flex gap-2 mb-2 w-100">
-                                            <form method="POST" action="stocks.php<?php echo $filterStock ? '?filter_stock='.$filterStock : ''; ?>" style="flex: 1;" onsubmit="return validateStockForm(this)">
-                                                <input type="hidden" name="action" value="update_stock">
-                                                <input type="hidden" name="category_id" value="<?php echo $mItem['id']; ?>">
-                                                <input type="hidden" name="operation" value="add">
-                                                <div class="input-group input-group-sm">
-                                                    <input type="number" name="stock_change" class="form-control" placeholder="Add qty" step="0.001" min="0.001" required>
-                                                    <button type="submit" class="btn btn-success" type="button">
-                                                        <i class="bi bi-plus"></i> Add
-                                                    </button>
-                                                </div>
-                                            </form>
-                                            <form method="POST" action="stocks.php<?php echo $filterStock ? '?filter_stock='.$filterStock : ''; ?>" style="flex: 1;" onsubmit="return validateStockForm(this)">
-                                                <input type="hidden" name="action" value="update_stock">
-                                                <input type="hidden" name="category_id" value="<?php echo $mItem['id']; ?>">
-                                                <input type="hidden" name="operation" value="subtract">
-                                                <div class="input-group input-group-sm">
-                                                    <input type="number" name="stock_change" class="form-control" placeholder="Remove qty" step="0.001" min="0.001" required>
-                                                    <button type="submit" class="btn btn-danger" type="button">
-                                                        <i class="bi bi-dash"></i> Remove
-                                                    </button>
-                                                </div>
-                                            </form>
-                                        </div>
-                                        
-                                        <div class="d-flex gap-2 w-100">
-                                            <button class="btn btn-sm btn-outline-info flex-fill" onclick="viewStockItem(<?php echo $mItem['id']; ?>)">
-                                                <i class="bi bi-eye me-1"></i>View
-                                            </button>
-                                            <button class="btn btn-sm btn-outline-primary flex-fill" data-bs-toggle="modal" data-bs-target="#editStockModal<?php echo $mItem['id']; ?>">
-                                                <i class="bi bi-pencil me-1"></i>Edit
-                                            </button>
-                                            <?php if ($mItem['total_quantity'] <= 0): ?>
-                                                <form method="POST" action="stocks.php<?php echo $filterStock ? '?filter_stock='.$filterStock : ''; ?>" style="flex: 1;" 
-                                                      onsubmit="return confirm('Delete this stock item?')">
-                                                    <input type="hidden" name="action" value="delete_stock">
-                                                    <input type="hidden" name="category_id" value="<?php echo $mItem['id']; ?>">
-                                                    <button type="submit" class="btn btn-sm btn-outline-danger w-100">
-                                                        <i class="bi bi-trash me-1"></i>Delete
-                                                    </button>
-                                                </form>
-                                            <?php endif; ?>
-                                        </div>
-                                    </div>
-                                <?php endif; ?>
                             </div>
-                        <?php endwhile; ?>
-                    <?php else: ?>
+                            
+                            <div class="mobile-card-row">
+                                <span class="mobile-card-label">Details</span>
+                                <span class="mobile-card-value value-muted"><?php echo htmlspecialchars($details); ?></span>
+                            </div>
+                            
+                            <div class="mobile-card-row">
+                                <span class="mobile-card-label">Purchase Price</span>
+                                <span class="mobile-card-value">₹<?php echo number_format($purchase_price, 2); ?> / <?php echo $unit; ?></span>
+                            </div>
+                            
+                            <div class="mobile-card-row">
+                                <span class="mobile-card-label">Current Stock</span>
+                                <span class="mobile-card-value">
+                                    <span class="fw-semibold"><?php echo number_format($current_stock, 2); ?> <?php echo $unit; ?></span>
+                                    <div class="stock-bar mt-1" style="width: 100%;">
+                                        <div class="stock-bar-fill <?php echo $stock_status['class'] === 'cancelled' ? 'critical' : ($stock_status['class'] === 'pending' ? 'low' : 'normal'); ?>" 
+                                             style="width: <?php echo min($stock_percentage, 100); ?>%;"></div>
+                                    </div>
+                                </span>
+                            </div>
+                            
+                            <div class="mobile-card-row">
+                                <span class="mobile-card-label">Min Stock Level</span>
+                                <span class="mobile-card-value">
+                                    <?php if ($min_stock > 0): ?>
+                                        <?php echo number_format($min_stock, 2); ?> <?php echo $unit; ?>
+                                    <?php else: ?>
+                                        <span class="text-muted">Not set</span>
+                                    <?php endif; ?>
+                                </span>
+                            </div>
+                            
+                            <div class="mobile-card-row">
+                                <span class="mobile-card-label">Stock Value</span>
+                                <span class="mobile-card-value fw-semibold" style="color: var(--primary);">
+                                    ₹<?php echo number_format($purchase_price * $current_stock, 2); ?>
+                                </span>
+                            </div>
+                            
+                            <?php if ($is_admin): ?>
+                                <div class="mobile-card-actions flex-column">
+                                    <div class="d-flex gap-2 mb-2 w-100">
+                                        <form method="POST" action="stocks.php<?php echo $filterStock ? '?filter_stock='.$filterStock.'&filter_type='.$filterType : '?filter_type='.$filterType; ?>" style="flex: 1;" onsubmit="return validateStockForm(this)">
+                                            <input type="hidden" name="action" value="<?php echo $is_category ? 'update_category_stock' : 'update_product_stock'; ?>">
+                                            <input type="hidden" name="<?php echo $is_category ? 'category_id' : 'product_id'; ?>" value="<?php echo $item['id']; ?>">
+                                            <input type="hidden" name="operation" value="add">
+                                            <div class="input-group input-group-sm">
+                                                <input type="number" name="stock_change" class="form-control" placeholder="Add qty" step="0.001" min="0.001" required>
+                                                <button type="submit" class="btn btn-success" type="button">
+                                                    <i class="bi bi-plus"></i> Add
+                                                </button>
+                                            </div>
+                                        </form>
+                                        <form method="POST" action="stocks.php<?php echo $filterStock ? '?filter_stock='.$filterStock.'&filter_type='.$filterType : '?filter_type='.$filterType; ?>" style="flex: 1;" onsubmit="return validateStockForm(this)">
+                                            <input type="hidden" name="action" value="<?php echo $is_category ? 'update_category_stock' : 'update_product_stock'; ?>">
+                                            <input type="hidden" name="<?php echo $is_category ? 'category_id' : 'product_id'; ?>" value="<?php echo $item['id']; ?>">
+                                            <input type="hidden" name="operation" value="subtract">
+                                            <div class="input-group input-group-sm">
+                                                <input type="number" name="stock_change" class="form-control" placeholder="Remove qty" step="0.001" min="0.001" required>
+                                                <button type="submit" class="btn btn-danger" type="button">
+                                                    <i class="bi bi-dash"></i> Remove
+                                                </button>
+                                            </div>
+                                        </form>
+                                    </div>
+                                    
+                                    <div class="d-flex gap-2 w-100">
+                                        <button class="btn btn-sm btn-outline-info flex-fill" onclick="viewStockItem(<?php echo $item['id']; ?>, '<?php echo $is_category ? 'category' : 'product'; ?>')">
+                                            <i class="bi bi-eye me-1"></i>View
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-primary flex-fill" data-bs-toggle="modal" data-bs-target="#editStockModal<?php echo $item['id']; ?>">
+                                            <i class="bi bi-pencil me-1"></i>Edit
+                                        </button>
+                                        <?php if ($current_stock <= 0): ?>
+                                            <form method="POST" action="stocks.php<?php echo $filterStock ? '?filter_stock='.$filterStock.'&filter_type='.$filterType : '?filter_type='.$filterType; ?>" style="flex: 1;" 
+                                                  onsubmit="return confirm('Delete this stock item?')">
+                                                <input type="hidden" name="action" value="<?php echo $is_category ? 'delete_category_stock' : 'delete_product_stock'; ?>">
+                                                <input type="hidden" name="<?php echo $is_category ? 'category_id' : 'product_id'; ?>" value="<?php echo $item['id']; ?>">
+                                                <button type="submit" class="btn btn-sm btn-outline-danger w-100">
+                                                    <i class="bi bi-trash me-1"></i>Delete
+                                                </button>
+                                            </form>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                    <?php endforeach; ?>
+                    
+                    <?php if (count($all_items) === 0): ?>
                         <div style="text-align: center; padding: 40px 16px; color: var(--text-muted);">
                             <i class="bi bi-boxes d-block mb-2" style="font-size: 36px;"></i>
                             <div style="font-size: 15px; font-weight: 500; margin-bottom: 4px;">No stock items found</div>
                             <div style="font-size: 13px;">
                                 <?php if ($filterStock): ?>
-                                    Try changing your filters or <a href="stocks.php">view all stock</a>
+                                    Try changing your filters or <a href="stocks.php?filter_type=<?php echo $filterType; ?>">view all stock</a>
+                                <?php elseif ($filterType === 'category'): ?>
+                                    <a href="categories.php">Add categories</a> to start tracking preform stock
+                                <?php elseif ($filterType === 'product'): ?>
+                                    <a href="products.php">Add products</a> to start tracking finished goods stock
                                 <?php else: ?>
-                                    <a href="categories.php">Add categories</a> to start tracking stock
+                                    <a href="categories.php">Add categories</a> or <a href="products.php">products</a> to start tracking stock
                                 <?php endif; ?>
                             </div>
                         </div>
@@ -1064,7 +1564,7 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
     </div>
 </div>
 
-<!-- View Stock Modal - FIXED -->
+<!-- View Stock Modal -->
 <div class="modal fade" id="viewStockModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -1114,11 +1614,10 @@ $(document).ready(function() {
     });
 });
 
-// View stock item details - FIXED VERSION
-function viewStockItem(id) {
-    console.log('Viewing stock item ID:', id);
+// View stock item details
+function viewStockItem(id, type) {
+    console.log('Viewing stock item ID:', id, 'Type:', type);
     
-    // Show the modal with loading spinner
     $('#viewStockModal').modal('show');
     $('#viewStockContent').html(`
         <div class="text-center py-5">
@@ -1129,24 +1628,24 @@ function viewStockItem(id) {
         </div>
     `);
     
-    // Make AJAX request to get stock details
     $.ajax({
-        url: '<?php echo $_SERVER['PHP_SELF']; ?>?ajax=get_stock&id=' + id,
+        url: '<?php echo $_SERVER['PHP_SELF']; ?>?ajax=get_stock&id=' + id + '&type=' + type,
         type: 'GET',
         dataType: 'json',
         success: function(response) {
-            console.log('AJAX Response:', response);
             if (response.success) {
                 let item = response.item;
-                let stockStatus = getStockStatusText(item.total_quantity, item.min_stock_level);
+                let stockStatus = getStockStatusText(item.total_quantity || item.stock_quantity, item.min_stock_level);
+                let isCategory = (type === 'category');
+                let unit = isCategory ? 'PCS' : (item.primary_unit ? item.primary_unit.toUpperCase() : 'PCS');
                 
-                // Format purchases HTML
                 let purchasesHtml = '';
                 if (response.purchases && response.purchases.length > 0) {
                     purchasesHtml = '<h6 class="fw-semibold mb-3" style="color: #2563eb;"><i class="bi bi-cart-check me-2"></i>Recent Purchase History</h6>';
                     response.purchases.forEach(pur => {
-                        // Format purchase number
                         let purchaseNo = pur.purchase_no || 'PUR-' + new Date(pur.created_at).toISOString().slice(0,10).replace(/-/g,'') + '-' + id;
+                        let quantity = pur.quantity;
+                        let pricePerUnit = pur.purchase_price;
                         
                         purchasesHtml += `
                             <div class="purchase-item">
@@ -1155,8 +1654,8 @@ function viewStockItem(id) {
                                     <span class="text-muted" style="font-size: 12px;">${new Date(pur.created_at).toLocaleDateString()}</span>
                                 </div>
                                 <div class="d-flex justify-content-between align-items-center mt-1">
-                                    <span>Quantity: <strong>${parseFloat(pur.quantity).toFixed(2)} PCS</strong></span>
-                                    <span>Rate: ₹${parseFloat(pur.purchase_price).toFixed(2)}</span>
+                                    <span>Quantity: <strong>${parseFloat(quantity).toFixed(2)} ${unit}</strong></span>
+                                    <span>Rate: ₹${parseFloat(pricePerUnit).toFixed(2)}</span>
                                 </div>
                             </div>
                         `;
@@ -1167,33 +1666,50 @@ function viewStockItem(id) {
                 
                 let html = `
                     <div class="info-grid-view">
-                        <!-- Basic Information -->
                         <div class="info-card-view">
                             <div class="info-title">
                                 <i class="bi bi-info-circle me-2"></i>Basic Information
                             </div>
                             <div class="info-row">
-                                <span class="info-label">Category:</span>
-                                <span class="info-value">${escapeHtml(item.category_name)}</span>
+                                <span class="info-label">${isCategory ? 'Category' : 'Product'}:</span>
+                                <span class="info-value">${escapeHtml(isCategory ? item.category_name : item.product_name)}</span>
                             </div>
                             <div class="info-row">
+                                <span class="info-label">Type:</span>
+                                <span class="info-value">${isCategory ? 'Preform / Raw Material' : (item.product_type === 'direct' ? 'Direct Sale Product' : 'Converted Sale Product')}</span>
+                            </div>`;
+                            
+                            if (isCategory && item.gram_value > 0) {
+                                html += `<div class="info-row">
+                                    <span class="info-label">Gram Value:</span>
+                                    <span class="info-value">${item.gram_value} g/piece</span>
+                                </div>`;
+                            }
+                            
+                            if (!isCategory && item.primary_unit) {
+                                html += `<div class="info-row">
+                                    <span class="info-label">Primary Unit:</span>
+                                    <span class="info-value">${escapeHtml(item.primary_unit)}</span>
+                                </div>`;
+                            }
+                            
+                            html += `<div class="info-row">
                                 <span class="info-label">Purchase Price:</span>
-                                <span class="info-value">₹${parseFloat(item.purchase_price).toFixed(2)} / PCS</span>
+                                <span class="info-value">₹${parseFloat(item.purchase_price).toFixed(2)} / ${unit}</span>
                             </div>
                             <div class="info-row">
                                 <span class="info-label">Min Stock Level:</span>
-                                <span class="info-value">${item.min_stock_level > 0 ? parseFloat(item.min_stock_level).toFixed(2) + ' PCS' : 'Not set'}</span>
+                                <span class="info-value">${item.min_stock_level > 0 ? parseFloat(item.min_stock_level).toFixed(2) + ' ' + unit : 'Not set'}</span>
                             </div>
                         </div>
                         
-                        <!-- Stock Status -->
                         <div class="info-card-view">
                             <div class="info-title">
                                 <i class="bi bi-boxes me-2"></i>Stock Status
                             </div>
                             <div class="info-row">
                                 <span class="info-label">Current Stock:</span>
-                                <span class="info-value"><strong>${parseFloat(item.total_quantity).toFixed(2)} PCS</strong></span>
+                                <span class="info-value"><strong>${parseFloat(item.total_quantity || item.stock_quantity).toFixed(2)} ${unit}</strong></span>
                             </div>
                             <div class="info-row">
                                 <span class="info-label">Status:</span>
@@ -1206,11 +1722,10 @@ function viewStockItem(id) {
                             </div>
                             <div class="info-row">
                                 <span class="info-label">Stock Value:</span>
-                                <span class="info-value">₹${(item.purchase_price * item.total_quantity).toFixed(2)}</span>
+                                <span class="info-value">₹${(item.purchase_price * (item.total_quantity || item.stock_quantity)).toFixed(2)}</span>
                             </div>
                         </div>
                         
-                        <!-- System Info -->
                         <div class="info-card-view">
                             <div class="info-title">
                                 <i class="bi bi-gear me-2"></i>System Information
@@ -1226,7 +1741,6 @@ function viewStockItem(id) {
                         </div>
                     </div>
                     
-                    <!-- Purchase History -->
                     <div class="info-card-view mt-3">
                         <div class="info-title">
                             <i class="bi bi-clock-history me-2"></i>Purchase History
@@ -1246,8 +1760,6 @@ function viewStockItem(id) {
         },
         error: function(xhr, status, error) {
             console.error('AJAX Error:', error);
-            console.error('Status:', status);
-            console.error('Response Text:', xhr.responseText);
             $('#viewStockContent').html(`
                 <div class="alert alert-danger m-3">
                     <i class="bi bi-exclamation-triangle me-2"></i>
@@ -1286,12 +1798,11 @@ function validateStockForm(form) {
         return false;
     }
     
-    // Check if subtracting and show warning
     const operation = form.querySelector('input[name="operation"]')?.value;
     if (operation === 'subtract') {
         const row = form.closest('tr');
         if (row) {
-            const stockCell = row.querySelector('td:nth-child(4) .fw-semibold');
+            const stockCell = row.querySelector('td:nth-child(6) .fw-semibold');
             if (stockCell) {
                 const currentStock = parseFloat(stockCell.textContent);
                 if (value > currentStock) {

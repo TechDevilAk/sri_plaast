@@ -1,5 +1,4 @@
 <?php
-// add-purchase.php
 session_start();
 $currentPage = 'add-purchase';
 $pageTitle = 'Add New Purchase';
@@ -132,7 +131,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     $headers = fgetcsv($handle);
                     
                     // Validate headers
-                    $expected_headers = ['supplier_name', 'purchase_date', 'invoice_num', 'category_name', 'quantity_kg', 'price_per_kg', 'gst_rate', 'payment_method', 'payment_amount', 'payment_notes'];
+                    $expected_headers = ['supplier_name', 'purchase_date', 'invoice_num', 'item_type', 'item_name', 'quantity', 'unit', 'price_per_unit', 'gst_rate', 'payment_method', 'payment_amount', 'payment_notes'];
                     $headers_valid = true;
                     
                     foreach ($expected_headers as $index => $expected) {
@@ -175,23 +174,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                     continue;
                                 }
                                 
-                                if (empty($row['category_name'])) {
-                                    $import_errors[] = "Row $row_number: Category name is required";
+                                if (empty($row['item_type'])) {
+                                    $import_errors[] = "Row $row_number: Item type is required (category or product)";
                                     $error_count++;
                                     continue;
                                 }
                                 
-                                if (empty($row['quantity_kg']) || floatval($row['quantity_kg']) <= 0) {
-                                    $import_errors[] = "Row $row_number: Valid quantity in kg is required";
+                                if (empty($row['item_name'])) {
+                                    $import_errors[] = "Row $row_number: Item name is required";
                                     $error_count++;
                                     continue;
                                 }
                                 
-                                if (empty($row['price_per_kg']) || floatval($row['price_per_kg']) <= 0) {
-                                    $import_errors[] = "Row $row_number: Valid price per kg is required";
+                                if (empty($row['quantity']) || floatval($row['quantity']) <= 0) {
+                                    $import_errors[] = "Row $row_number: Valid quantity is required";
                                     $error_count++;
                                     continue;
                                 }
+                                
+                                if (empty($row['price_per_unit']) || floatval($row['price_per_unit']) <= 0) {
+                                    $import_errors[] = "Row $row_number: Valid price per unit is required";
+                                    $error_count++;
+                                    continue;
+                                }
+                                
+                                $item_type = strtolower($row['item_type']);
+                                $item_name = $row['item_name'];
+                                $quantity = floatval($row['quantity']);
+                                $price_per_unit = floatval($row['price_per_unit']);
+                                $unit = $row['unit'] ?: ($item_type == 'category' ? 'kg' : 'pcs');
                                 
                                 // Find or create supplier
                                 $supplier_name = $row['supplier_name'];
@@ -220,48 +231,83 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                 }
                                 $supplier_check->close();
                                 
-                                // Find or create category
-                                $category_name = $row['category_name'];
-                                $category_id = null;
+                                $item_id = null;
                                 $gram_value = 0;
+                                $category_id = null;
+                                $product_id = null;
+                                $product_unit = '';
                                 
-                                $category_check = $conn->prepare("SELECT id, gram_value FROM category WHERE category_name = ?");
-                                $category_check->bind_param("s", $category_name);
-                                $category_check->execute();
-                                $category_result = $category_check->get_result();
-                                
-                                if ($category_result->num_rows > 0) {
-                                    $category = $category_result->fetch_assoc();
-                                    $category_id = $category['id'];
-                                    $gram_value = $category['gram_value'];
+                                if ($item_type == 'category') {
+                                    // Find category (preform)
+                                    $category_check = $conn->prepare("SELECT id, gram_value FROM category WHERE category_name = ?");
+                                    $category_check->bind_param("s", $item_name);
+                                    $category_check->execute();
+                                    $category_result = $category_check->get_result();
+                                    
+                                    if ($category_result->num_rows > 0) {
+                                        $category = $category_result->fetch_assoc();
+                                        $category_id = $category['id'];
+                                        $gram_value = $category['gram_value'];
+                                    } else {
+                                        $import_errors[] = "Row $row_number: Category not found. Please add category first.";
+                                        $error_count++;
+                                        continue;
+                                    }
+                                    $category_check->close();
+                                    
+                                    if ($gram_value <= 0) {
+                                        $import_errors[] = "Row $row_number: Invalid gram value for category";
+                                        $error_count++;
+                                        continue;
+                                    }
+                                    
+                                    // Calculate pieces for category purchase
+                                    $pcs_per_kg = 1000 / $gram_value;
+                                    $total_pcs = $pcs_per_kg * $quantity;
+                                    $price_per_pc = $price_per_unit / $pcs_per_kg;
+                                    $total_price = $quantity * $price_per_unit;
+                                    
+                                    $qty_pieces = $total_pcs;
+                                    $qty_kg = $quantity;
+                                    $sec_unit = 'kg';
+                                    $unit = 'pcs';
+                                    
+                                } else if ($item_type == 'product') {
+                                    // Find product (direct sale product)
+                                    $product_check = $conn->prepare("SELECT id, product_type, primary_unit, stock_quantity FROM product WHERE product_name = ?");
+                                    $product_check->bind_param("s", $item_name);
+                                    $product_check->execute();
+                                    $product_result = $product_check->get_result();
+                                    
+                                    if ($product_result->num_rows > 0) {
+                                        $product = $product_result->fetch_assoc();
+                                        $product_id = $product['id'];
+                                        $product_unit = $product['primary_unit'] ?: 'pcs';
+                                    } else {
+                                        $import_errors[] = "Row $row_number: Product not found. Please add product first.";
+                                        $error_count++;
+                                        continue;
+                                    }
+                                    $product_check->close();
+                                    
+                                    $total_price = $quantity * $price_per_unit;
+                                    $qty_pieces = $quantity;
+                                    $qty_kg = 0;
+                                    $sec_unit = '';
+                                    $gram_value = 0;
+                                    $unit = $product_unit; // Use product's primary unit
+                                    
                                 } else {
-                                    $import_errors[] = "Row $row_number: Category not found. Please add category first.";
-                                    $error_count++;
-                                    continue;
-                                }
-                                $category_check->close();
-                                
-                                if ($gram_value <= 0) {
-                                    $import_errors[] = "Row $row_number: Invalid gram value for category";
+                                    $import_errors[] = "Row $row_number: Invalid item_type. Must be 'category' or 'product'";
                                     $error_count++;
                                     continue;
                                 }
                                 
-                                // Calculate quantities and amounts
-                                $quantity_kg = floatval($row['quantity_kg']);
-                                $price_per_kg = floatval($row['price_per_kg']);
-                                $total_price = $quantity_kg * $price_per_kg;
-                                
-                                // Parse GST rate (e.g., "18" or "18%")
+                                // Parse GST rate
                                 $gst_rate_str = str_replace('%', '', $row['gst_rate']);
                                 $gst_rate = floatval($gst_rate_str);
                                 $cgst_rate = $gst_rate / 2;
                                 $sgst_rate = $gst_rate / 2;
-                                
-                                // Calculate pieces
-                                $pcs_per_kg = 1000 / $gram_value;
-                                $total_pcs = $pcs_per_kg * $quantity_kg;
-                                $price_per_pc = $total_price / $total_pcs;
                                 
                                 // Calculate GST amounts
                                 $cgst_amount = ($total_price * $cgst_rate) / 100;
@@ -275,19 +321,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                 // Insert purchase
                                 $purchase_date = !empty($row['purchase_date']) ? date('Y-m-d', strtotime($row['purchase_date'])) : date('Y-m-d');
                                 $invoice_num = !empty($row['invoice_num']) ? $row['invoice_num'] : '';
+                                $purchase_type = ($item_type == 'category') ? 'category' : 'product';
+                                $gst_type_val = 'exclusive';
                                 
                                 $insert_purchase = $conn->prepare("
                                     INSERT INTO purchase (
                                         supplier_id, purchase_no, invoice_num, purchase_date,
-                                        cgst, cgst_amount, sgst, sgst_amount, total, gst_type
-                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'exclusive')
+                                        cgst, cgst_amount, sgst, sgst_amount, total, gst_type, purchase_type
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 ");
                                 
                                 $insert_purchase->bind_param(
-                                    "isssddddd",
+                                    "isssdddddss",
                                     $supplier_id, $purchase_no, $invoice_num, $purchase_date,
                                     $cgst_rate, $cgst_amount, $sgst_rate, $sgst_amount,
-                                    $total_with_gst
+                                    $total_with_gst, $gst_type_val, $purchase_type
                                 );
                                 
                                 if (!$insert_purchase->execute()) {
@@ -302,22 +350,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                 // Insert purchase item
                                 $insert_item = $conn->prepare("
                                     INSERT INTO purchase_item (
-                                        purchase_id, cat_id, cat_name, cat_grm_value, hsn,
+                                        purchase_id, cat_id, product_id, cat_name, cat_grm_value, hsn,
                                         taxable, cgst, cgst_amount, sgst, sgst_amount,
                                         purchase_price, total, qty, unit, sec_qty, sec_unit
-                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 ");
                                 
-                                $hsn = ''; // HSN can be fetched from category if needed
-                                $unit = 'pcs';
-                                $sec_qty = $quantity_kg;
-                                $sec_unit = 'kg';
+                                $hsn = '';
+                                $cat_name = ($item_type == 'category') ? $item_name : '';
                                 
                                 $insert_item->bind_param(
-                                    "iisdsddddddddsds",
-                                    $purchase_id, $category_id, $category_name, $gram_value, $hsn,
+                                    "iiisdsddddddddsds",
+                                    $purchase_id, $category_id, $product_id, $cat_name, $gram_value, $hsn,
                                     $taxable, $cgst_rate, $cgst_amount, $sgst_rate, $sgst_amount,
-                                    $price_per_pc, $total_with_gst, $total_pcs, $unit, $sec_qty, $sec_unit
+                                    $price_per_unit, $total_with_gst, $qty_pieces, $unit, $qty_kg, $sec_unit
                                 );
                                 
                                 if (!$insert_item->execute()) {
@@ -327,17 +373,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                 }
                                 $insert_item->close();
                                 
-                                // Update category stock
-                                $update_stock = $conn->prepare("
-                                    UPDATE category 
-                                    SET total_quantity = total_quantity + ?,
-                                        purchase_price = ?,
-                                        updated_at = CURRENT_TIMESTAMP
-                                    WHERE id = ?
-                                ");
-                                $update_stock->bind_param("ddi", $total_pcs, $price_per_pc, $category_id);
-                                $update_stock->execute();
-                                $update_stock->close();
+                                // Update stock based on item type
+                                if ($item_type == 'category') {
+                                    // Update category stock (store in pieces)
+                                    $update_stock = $conn->prepare("
+                                        UPDATE category 
+                                        SET total_quantity = total_quantity + ?,
+                                            purchase_price = ?,
+                                            updated_at = CURRENT_TIMESTAMP
+                                        WHERE id = ?
+                                    ");
+                                    $update_stock->bind_param("ddi", $qty_pieces, $price_per_pc, $category_id);
+                                    $update_stock->execute();
+                                    $update_stock->close();
+                                } else if ($item_type == 'product') {
+                                    // Update product stock quantity in product table
+                                    $update_product = $conn->prepare("
+                                        UPDATE product 
+                                        SET stock_quantity = stock_quantity + ?,
+                                            updated_at = CURRENT_TIMESTAMP
+                                        WHERE id = ?
+                                    ");
+                                    $update_product->bind_param("di", $qty_pieces, $product_id);
+                                    $update_product->execute();
+                                    $update_product->close();
+                                }
                                 
                                 // Add to GST credit table
                                 if ($cgst_amount > 0 || $sgst_amount > 0) {
@@ -378,7 +438,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                 // Rollback if there are errors
                                 mysqli_rollback($conn);
                                 $error = "Import completed with errors. Successful: $success_count, Failed: $error_count.<br>";
-                                $error .= implode("<br>", array_slice($import_errors, 0, 10)); // Show first 10 errors
+                                $error .= implode("<br>", array_slice($import_errors, 0, 10));
                                 if (count($import_errors) > 10) {
                                     $error .= "<br>... and " . (count($import_errors) - 10) . " more errors.";
                                 }
@@ -401,13 +461,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
 // ==================== EXPORT SAMPLE CSV ====================
 if (isset($_GET['export']) && $_GET['export'] === 'sample_purchase_csv') {
-    // Sample data
+    // Sample data with both category and product types
     $sample_data = [
-        ['supplier_name', 'purchase_date', 'invoice_num', 'category_name', 'quantity_kg', 'price_per_kg', 'gst_rate', 'payment_method', 'payment_amount', 'payment_notes'],
-        ['Sample Supplier 1', date('Y-m-d'), 'INV-001', '9.3 grm', '100.5', '120.00', '18', 'bank', '12060.00', 'Full payment'],
-        ['Sample Supplier 1', date('Y-m-d'), 'INV-001', '12.3 gram', '75.25', '135.00', '18', 'bank', '10158.75', 'Full payment'],
-        ['Sample Supplier 2', date('Y-m-d'), 'INV-002', '19.3Grm Pet Preforms', '50.0', '180.00', '18', 'cash', '9000.00', 'Partial payment'],
-        ['Sample Supplier 3', date('Y-m-d'), 'INV-003', '32Grm', '200.0', '95.00', '18', 'upi', '19000.00', ''],
+        ['supplier_name', 'purchase_date', 'invoice_num', 'item_type', 'item_name', 'quantity', 'unit', 'price_per_unit', 'gst_rate', 'payment_method', 'payment_amount', 'payment_notes'],
+        ['Sample Supplier', date('Y-m-d'), 'INV-001', 'category', '9.5 GM PREFORMS', '100.5', 'kg', '120.00', '18', 'bank', '12060.00', 'Full payment'],
+        ['Sample Supplier', date('Y-m-d'), 'INV-001', 'category', '12.5 GRM PREFORMS', '75.25', 'kg', '135.00', '18', 'bank', '10158.75', 'Full payment'],
+        ['Sample Supplier', date('Y-m-d'), 'INV-002', 'product', '300 ML ROUND BOTTLE', '40', 'bag', '591.60', '18', 'cash', '23664.00', 'Purchase 40 bags'],
+        ['Sample Supplier', date('Y-m-d'), 'INV-003', 'product', 'PET CAP 15000', '2', 'bag', '2400.00', '18', 'upi', '4800.00', 'Purchase 2 bags'],
     ];
     
     // Set headers for CSV download
@@ -430,30 +490,46 @@ if (isset($_GET['export']) && $_GET['export'] === 'sample_purchase_csv') {
 
 // ==================== EXPORT PURCHASE TEMPLATE ====================
 if (isset($_GET['export']) && $_GET['export'] === 'purchase_template') {
-    // Get suppliers for dropdown reference in template
+    // Get suppliers for dropdown reference
     $suppliers = $conn->query("SELECT supplier_name FROM suppliers ORDER BY supplier_name");
     $supplier_list = [];
     while ($s = $suppliers->fetch_assoc()) {
         $supplier_list[] = $s['supplier_name'];
     }
     
-    // Get categories for dropdown reference
-    $categories = $conn->query("SELECT category_name FROM category WHERE total_quantity > 0 ORDER BY category_name");
+    // Get categories for reference
+    $categories = $conn->query("SELECT category_name FROM category ORDER BY category_name");
     $category_list = [];
     while ($c = $categories->fetch_assoc()) {
         $category_list[] = $c['category_name'];
     }
     
+    // Get products for reference with their units
+    $products = $conn->query("SELECT product_name, product_type, primary_unit FROM product ORDER BY product_name");
+    $product_list = [];
+    while ($p = $products->fetch_assoc()) {
+        $type_label = ($p['product_type'] == 'direct') ? 'Direct' : 'Converted';
+        $unit = $p['primary_unit'] ?: 'pcs';
+        $product_list[] = $p['product_name'] . " ({$type_label}, Unit: {$unit})";
+    }
+    
     // Create template with instructions
     $template_data = [
-        ['supplier_name', 'purchase_date', 'invoice_num', 'category_name', 'quantity_kg', 'price_per_kg', 'gst_rate', 'payment_method', 'payment_amount', 'payment_notes'],
-        ['INSTRUCTIONS:', 'YYYY-MM-DD', 'Optional', 'Must exist', '>0', '>0', '5,12,18,28', 'cash/card/upi/bank', 'Optional', 'Optional'],
-        ['---', '---', '---', '---', '---', '---', '---', '---', '---', '---'],
+        ['supplier_name', 'purchase_date', 'invoice_num', 'item_type', 'item_name', 'quantity', 'unit', 'price_per_unit', 'gst_rate', 'payment_method', 'payment_amount', 'payment_notes'],
+        ['INSTRUCTIONS:', 'YYYY-MM-DD', 'Optional', 'category or product', 'Must exist', '>0', 'kg or product unit', '>0', '5,12,18,28', 'cash/card/upi/bank', 'Optional', 'Optional'],
+        ['---', '---', '---', '---', '---', '---', '---', '---', '---', '---', '---', '---'],
+        ['For CATEGORY (preforms):', '---', '---', 'category', 'Category Name', 'KG quantity', 'kg', 'Price per KG', '18', '---', '---', '---'],
     ];
     
     // Add some examples
-    if (!empty($supplier_list)) {
-        $template_data[] = [$supplier_list[0] ?? 'Supplier Name', date('Y-m-d'), 'INV-001', $category_list[0] ?? 'Category Name', '100', '120', '18', 'bank', '12000', 'Full payment'];
+    if (!empty($category_list)) {
+        $template_data[] = [$supplier_list[0] ?? 'Supplier Name', date('Y-m-d'), 'INV-001', 'category', $category_list[0] ?? 'Category Name', '100', 'kg', '120', '18', 'bank', '12000', 'Full payment'];
+    }
+    if (!empty($product_list)) {
+        $template_data[] = ['', '', '', '', '', '', '', '', '', '', '', ''];
+        $template_data[] = ['For PRODUCT (direct sale):', '---', '---', 'product', 'Product Name', 'Quantity in product unit', 'Product unit', 'Price per unit', '18', '---', '---', '---'];
+        $product_example = explode(' (', $product_list[0] ?? 'Product Name');
+        $template_data[] = [$supplier_list[0] ?? 'Supplier Name', date('Y-m-d'), 'INV-002', 'product', $product_example[0], '40', 'bag', '591.60', '18', 'cash', '23664', 'Purchase 40 bags'];
     }
     
     // Set headers for CSV download
@@ -578,7 +654,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] !== '') {
         json_response(["ok" => true, "supplier" => $row]);
     }
 
-    // Search categories for dropdown
+    // Search categories for dropdown (preforms)
     if ($ajax === 'categories') {
         $term = trim($_GET['term'] ?? '');
         $termLike = "%{$term}%";
@@ -613,7 +689,52 @@ if (isset($_GET['ajax']) && $_GET['ajax'] !== '') {
                     "gram_value" => (float)$row['gram_value'],
                     "total_quantity" => (float)$row['total_quantity'],
                     "min_stock_level" => (float)$row['min_stock_level'],
-                    "pcs_per_kg" => $pcs_per_kg
+                    "pcs_per_kg" => $pcs_per_kg,
+                    "item_type" => "category"
+                ]
+            ];
+        }
+
+        json_response(["results" => $items]);
+    }
+
+    // Search products for dropdown (direct sale products) - WITH PRIMARY UNIT AND STOCK
+    if ($ajax === 'products') {
+        $term = trim($_GET['term'] ?? '');
+        $termLike = "%{$term}%";
+
+        $stmt = $conn->prepare("
+            SELECT id, product_name, product_type, hsn_code, primary_unit, stock_quantity
+            FROM product
+            WHERE product_name LIKE ?
+            ORDER BY product_name ASC
+            LIMIT 50
+        ");
+        $stmt->bind_param("s", $termLike);
+        $stmt->execute();
+        $res = $stmt->get_result();
+
+        $items = [];
+        while ($row = $res->fetch_assoc()) {
+            $type_label = ($row['product_type'] == 'direct') ? 'Direct Sale' : 'Converted Sale';
+            $unit = $row['primary_unit'] ?: 'pcs';
+            $stock = (float)$row['stock_quantity'];
+            
+            $label = $row['product_name'];
+            $label .= " • {$type_label}";
+            $label .= " • Unit: {$unit}";
+            $label .= " • Stock: " . number_format($stock, 2) . " {$unit}";
+
+            $items[] = [
+                "id"   => $row['id'],
+                "text" => $label,
+                "meta" => [
+                    "product_name" => $row['product_name'],
+                    "product_type" => $row['product_type'],
+                    "hsn_code" => $row['hsn_code'],
+                    "primary_unit" => $row['primary_unit'],
+                    "stock_quantity" => $stock,
+                    "item_type" => "product"
                 ]
             ];
         }
@@ -635,7 +756,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $purchase_no = trim($_POST['purchase_no'] ?? '');
     $invoice_num = trim($_POST['invoice_num'] ?? '');
     $purchase_date = trim($_POST['purchase_date'] ?? date('Y-m-d'));
-    $gst_type = $_POST['gst_type'] ?? 'exclusive'; // inclusive or exclusive
+    $gst_type = $_POST['gst_type'] ?? 'exclusive';
     $items_json = $_POST['items_json'] ?? '';
     $items = json_decode($items_json, true);
     
@@ -661,23 +782,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $conn->begin_transaction();
 
         try {
+            // Determine purchase type (category or product)
+            $has_category = false;
+            $has_product = false;
+            foreach ($items as $item) {
+                if ($item['item_type'] == 'category') $has_category = true;
+                if ($item['item_type'] == 'product') $has_product = true;
+            }
+            // If both types exist, default to category
+            $purchase_type = ($has_category) ? 'category' : 'product';
+            
             // Create purchase record
             $stmt = $conn->prepare("
                 INSERT INTO purchase (
                     supplier_id, purchase_no, invoice_num, purchase_date,
-                    cgst, cgst_amount, sgst, sgst_amount, total, gst_type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    cgst, cgst_amount, sgst, sgst_amount, total, gst_type, purchase_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
 
-            // We'll update these after calculating items
             $temp_cgst = 0;
             $temp_sgst = 0;
 
             $stmt->bind_param(
-                "isssddddds",
-                $supplier_id, $purchase_no, $invoice_num, $purchase_date,
-                $temp_cgst, $total_cgst, $temp_sgst, $total_sgst,
-                $total_amount, $gst_type
+                "isssdddddss",
+                $supplier_id,
+                $purchase_no,
+                $invoice_num,
+                $purchase_date,
+                $temp_cgst,
+                $total_cgst,
+                $temp_sgst,
+                $total_sgst,
+                $total_amount,
+                $gst_type,
+                $purchase_type
             );
             $stmt->execute();
             $purchase_id = $stmt->insert_id;
@@ -686,15 +824,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             // Insert purchase items
             $item_stmt = $conn->prepare("
                 INSERT INTO purchase_item (
-                    purchase_id, cat_id, cat_name, cat_grm_value, hsn,
+                    purchase_id, cat_id, product_id, cat_name, cat_grm_value, hsn,
                     taxable, cgst, cgst_amount, sgst, sgst_amount,
                     purchase_price, total, qty, unit, sec_qty, sec_unit
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
 
             foreach ($items as $item) {
-                $cat_id = $item['cat_id'];
-                $cat_name = $item['cat_name'];
+                $cat_id = ($item['item_type'] == 'category') ? $item['cat_id'] : null;
+                $product_id = ($item['item_type'] == 'product') ? $item['product_id'] : null;
+                $cat_name = $item['cat_name'] ?? '';
                 $cat_grm = $item['gram_value'] ?? 0;
                 $hsn = $item['hsn_code'] ?? '';
                 $taxable = $item['taxable'];
@@ -702,39 +841,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 $cgst_amt = $item['cgst_amt'];
                 $sgst = $item['sgst'] ?? 0;
                 $sgst_amt = $item['sgst_amt'];
-                $purchase_price = $item['purchase_price']; // Price per piece
+                $purchase_price = $item['purchase_price'];
                 $total = $item['total'];
-                $qty = $item['qty']; // In pieces
-                $unit = $item['unit'];
-                $kg_qty = $item['kg_qty'] ?? 0; // Original kg quantity
-                $sec_unit = 'kg';
+                $qty = $item['qty']; // This is the quantity in the product's primary unit
+                $unit = $item['unit']; // Primary unit from product table
+                $kg_qty = $item['kg_qty'] ?? 0;
+                $sec_unit = $item['sec_unit'] ?? '';
+                
                 $total_taxable += $taxable;
                 $total_cgst += $cgst_amt;
                 $total_sgst += $sgst_amt;
                 $total_amount += $total;
 
                 $item_stmt->bind_param(
-                    "iisdsddddddddsds",
-                    $purchase_id, $cat_id, $cat_name, $cat_grm, $hsn,
+                    "iiisdsddddddddsds",
+                    $purchase_id, $cat_id, $product_id, $cat_name, $cat_grm, $hsn,
                     $taxable, $cgst, $cgst_amt, $sgst, $sgst_amt,
                     $purchase_price, $total, $qty, $unit, $kg_qty, $sec_unit
                 );
                 $item_stmt->execute();
 
-                // Store price per piece including GST for category
-                $gst_percent = (float)$cgst + (float)$sgst;
-                $price_per_pc_incl_gst = (float)$purchase_price; // Already includes GST from calculation
+                // Update stock based on item type
+                if ($item['item_type'] == 'category') {
+                    // Store price per piece including GST
+                    $price_per_pc_incl_gst = (float)$purchase_price;
 
-                $update_cat = $conn->prepare("
-                    UPDATE category 
-                    SET total_quantity = total_quantity + ?,
-                        purchase_price = ?,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                ");
-                $update_cat->bind_param("ddi", $qty, $price_per_pc_incl_gst, $cat_id);
-                $update_cat->execute();
-                $update_cat->close();
+                    $update_cat = $conn->prepare("
+                        UPDATE category 
+                        SET total_quantity = total_quantity + ?,
+                            purchase_price = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    ");
+                    $update_cat->bind_param("ddi", $qty, $price_per_pc_incl_gst, $cat_id);
+                    $update_cat->execute();
+                    $update_cat->close();
+                } else if ($item['item_type'] == 'product') {
+                    // Update product stock quantity in product table
+                    $update_product = $conn->prepare("
+                        UPDATE product 
+                        SET stock_quantity = stock_quantity + ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    ");
+                    $update_product->bind_param("di", $qty, $product_id);
+                    $update_product->execute();
+                    $update_product->close();
+                }
             }
             $item_stmt->close();
 
@@ -829,7 +982,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }
 
             // Log activity
-            $log_desc = "Created purchase #{$purchase_no} with " . count($items) . " items (Total: ₹" . money2($total_amount) . ")";
+            $item_count = count($items);
+            $log_desc = "Created purchase #{$purchase_no} with {$item_count} items (Total: ₹" . money2($total_amount) . ", Type: " . ucfirst($purchase_type) . ")";
             $log_stmt = $conn->prepare("INSERT INTO activity_log (user_id, action, description) VALUES (?, 'create', ?)");
             $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
             $log_stmt->execute();
@@ -1112,6 +1266,60 @@ $payment_methods = ['cash', 'card', 'upi', 'bank'];
             background: #f0fdf4;
             border-left: 4px solid #10b981;
         }
+        
+        .item-type-selector {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 15px;
+            padding: 12px;
+            background: #f8fafc;
+            border-radius: 12px;
+        }
+        
+        .item-type-option {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .item-type-option input[type="radio"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+        
+        .item-type-option label {
+            cursor: pointer;
+            margin: 0;
+            font-weight: 500;
+        }
+        
+        .item-type-desc {
+            font-size: 11px;
+            color: #64748b;
+            margin-left: 28px;
+            margin-top: -4px;
+        }
+        
+        .product-badge {
+            background: #dbeafe;
+            color: #1e40af;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
+        }
+        
+        .category-badge {
+            background: #f0fdf4;
+            color: #16a34a;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
+        }
 
         /* Bulk Import Section Styles */
         .import-section {
@@ -1320,6 +1528,21 @@ $payment_methods = ['cash', 'card', 'upi', 'bank'];
             padding: 10px 30px !important;
             font-weight: 500 !important;
         }
+        
+        .product-unit-badge {
+            background: #e8f2ff;
+            color: #2463eb;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+            display: inline-block;
+        }
+        
+        .product-unit-badge.secondary {
+            background: #f0fdf4;
+            color: #16a34a;
+        }
     </style>
 </head>
 <body>
@@ -1336,7 +1559,7 @@ $payment_methods = ['cash', 'card', 'upi', 'bank'];
             <div class="d-flex align-items-center justify-content-between flex-wrap gap-3 mb-4">
                 <div>
                     <h4 class="fw-bold mb-1" style="color: var(--text-primary);">Add New Purchase</h4>
-                    <p style="font-size: 14px; color: var(--text-muted); margin: 0;">Create purchase with kg to pieces conversion</p>
+                    <p style="font-size: 14px; color: var(--text-muted); margin: 0;">Purchase categories (kg → pieces) or direct sale products</p>
                 </div>
                 <div class="d-flex gap-2">
                     <a href="?export=sample_purchase_csv" class="btn-sample">
@@ -1441,11 +1664,13 @@ $payment_methods = ['cash', 'card', 'upi', 'bank'];
                 </form>
                 <div class="mt-3 text-muted small">
                     <i class="bi bi-info-circle me-1"></i>
-                    CSV must have headers: supplier_name, purchase_date, invoice_num, category_name, quantity_kg, price_per_kg, gst_rate, payment_method, payment_amount, payment_notes
+                    CSV must have headers: supplier_name, purchase_date, invoice_num, item_type, item_name, quantity, unit, price_per_unit, gst_rate, payment_method, payment_amount, payment_notes<br>
+                    <strong>item_type:</strong> "category" for preforms (kg conversion) or "product" for direct sale products<br>
+                    <strong>For products:</strong> Use the product's primary unit (e.g., bag, pcs, bottle) in the "unit" column
                 </div>
                 <div class="mt-2 text-warning small">
                     <i class="bi bi-exclamation-triangle me-1"></i>
-                    <strong>Note:</strong> Categories must already exist in the system. Suppliers will be created if they don't exist.
+                    <strong>Note:</strong> Categories must already exist in the system. Products must already exist. Suppliers will be created if they don't exist.
                 </div>
             </div>
 
@@ -1521,100 +1746,156 @@ $payment_methods = ['cash', 'card', 'upi', 'bank'];
                 <div class="card-custom">
                     <div class="card-header-custom">
                         <h5><i class="bi bi-cart-plus me-2"></i>Add Items</h5>
-                        <span class="badge bg-light text-dark">kg → pieces conversion</span>
+                        <span class="badge bg-light text-dark">Category (kg→pieces) or Direct Product</span>
                     </div>
                     <div class="card-body-custom">
-                        <div class="row g-4">
-                            <!-- Category Selection with Quick Add -->
-                            <div class="col-md-4">
-                                <div class="category-header">
-                                    <label class="form-label">Select Category <span class="text-danger">*</span></label>
-                                    <a href="#" class="quick-add-link" data-bs-toggle="modal" data-bs-target="#quickAddCategoryModal">
-                                        <i class="bi bi-plus-circle"></i> Add New
-                                    </a>
-                                </div>
-                                <select class="form-select" id="categorySelect" style="width:100%"></select>
-                                <div class="mt-2" id="categoryMeta"></div>
+                        <!-- Item Type Selector -->
+                        <div class="item-type-selector">
+                            <div class="item-type-option">
+                                <input type="radio" name="item_type" id="item_type_category" value="category" checked>
+                                <label for="item_type_category">Category (Preform / Raw Material)</label>
                             </div>
-
-                            <!-- GST Selection -->
-                            <div class="col-md-4">
-                                <label class="form-label">GST Rate</label>
-                                <select class="form-select" id="gstSelect">
-                                    <option value="0,0">No GST</option>
-                                    <?php 
-                                    if ($gst_rates && $gst_rates->num_rows > 0) {
-                                        while ($gst = $gst_rates->fetch_assoc()): 
-                                    ?>
-                                        <option value="<?php echo $gst['cgst'] . ',' . $gst['sgst']; ?>">
-                                            <?php echo $gst['hsn']; ?> - CGST: <?php echo $gst['cgst']; ?>% + SGST: <?php echo $gst['sgst']; ?>%
-                                        </option>
-                                    <?php 
-                                        endwhile; 
-                                    } 
-                                    ?>
-                                </select>
+                            <div class="item-type-desc">
+                                <i class="bi bi-info-circle"></i> Purchase preforms/raw materials in KG, convert to pieces
                             </div>
-
-                            <!-- Quantity in KG -->
-                            <div class="col-md-2">
-                                <label class="form-label">Quantity (kg)</label>
-                                <input type="number" class="form-control" id="kgInput" 
-                                       step="0.001" min="0.001" disabled>
+                            <div class="item-type-option">
+                                <input type="radio" name="item_type" id="item_type_product" value="product">
+                                <label for="item_type_product">Direct Sale Product</label>
                             </div>
-
-                            <!-- Price per KG - NEW FIELD -->
-                            <div class="col-md-2">
-                                <label class="form-label">Price per KG (₹)</label>
-                                <div class="input-group">
-                                    <span class="input-group-text">₹</span>
-                                    <input type="number" class="form-control price-per-kg-field" id="pricePerKgInput" 
-                                           step="0.01" min="0" disabled>
-                                </div>
-                                <small class="text-muted">Enter to calculate total</small>
-                            </div>
-
-                            <!-- Total Purchase Price (calculated or manual) -->
-                            <div class="col-md-2">
-                                <label class="form-label">Total Price (₹)</label>
-                                <div class="input-group">
-                                    <span class="input-group-text">₹</span>
-                                    <input type="number" class="form-control" id="totalPriceInput" 
-                                           step="0.01" min="0" disabled>
-                                </div>
-                            </div>
-
-                            <!-- Add Button -->
-                            <div class="col-12 d-flex justify-content-end">
-                                <button type="button" class="btn btn-primary" id="addItemBtn" disabled>
-                                    <i class="bi bi-plus-circle me-2"></i>Add Item
-                                </button>
+                            <div class="item-type-desc">
+                                <i class="bi bi-info-circle"></i> Purchase finished products directly (e.g., 1 bag = 136 bottles)
                             </div>
                         </div>
 
-                        <!-- Conversion Preview -->
-                        <div id="conversionPreview" class="conversion-preview" style="display: none;">
-                            <h6 class="mb-3"><i class="bi bi-calculator me-2"></i>Conversion Preview</h6>
-                            <div class="preview-grid">
-                                <div class="preview-item">
-                                    <div class="preview-label">Gram per piece</div>
-                                    <div class="preview-value" id="previewGram">0 g</div>
+                        <div id="categoryFields">
+                            <!-- Category Selection (for preforms) -->
+                            <div class="row g-4">
+                                <div class="col-md-4">
+                                    <div class="category-header">
+                                        <label class="form-label">Select Category <span class="text-danger">*</span></label>
+                                        <a href="#" class="quick-add-link" data-bs-toggle="modal" data-bs-target="#quickAddCategoryModal">
+                                            <i class="bi bi-plus-circle"></i> Add New
+                                        </a>
+                                    </div>
+                                    <select class="form-select" id="categorySelect" style="width:100%"></select>
+                                    <div class="mt-2" id="categoryMeta"></div>
                                 </div>
-                                <div class="preview-item">
-                                    <div class="preview-label">Pieces per kg</div>
-                                    <div class="preview-value" id="previewPcsPerKg">0 pcs</div>
+
+                                <!-- GST Selection -->
+                                <div class="col-md-4">
+                                    <label class="form-label">GST Rate</label>
+                                    <select class="form-select" id="gstSelect">
+                                        <option value="0,0">No GST</option>
+                                        <?php 
+                                        if ($gst_rates && $gst_rates->num_rows > 0) {
+                                            while ($gst = $gst_rates->fetch_assoc()): 
+                                        ?>
+                                            <option value="<?php echo $gst['cgst'] . ',' . $gst['sgst']; ?>">
+                                                <?php echo $gst['hsn']; ?> - CGST: <?php echo $gst['cgst']; ?>% + SGST: <?php echo $gst['sgst']; ?>%
+                                            </option>
+                                        <?php 
+                                            endwhile; 
+                                        } 
+                                        ?>
+                                    </select>
                                 </div>
-                                <div class="preview-item">
-                                    <div class="preview-label">Total pieces</div>
-                                    <div class="preview-value" id="previewPcs">0 pcs</div>
+
+                                <!-- Quantity in KG -->
+                                <div class="col-md-2">
+                                    <label class="form-label">Quantity (kg)</label>
+                                    <input type="number" class="form-control" id="kgInput" 
+                                           step="0.001" min="0.001" disabled>
                                 </div>
-                                <div class="preview-item">
-                                    <div class="preview-label">Price per piece</div>
-                                    <div class="preview-value" id="previewPricePerPc">₹0.00</div>
+
+                                <!-- Price per KG -->
+                                <div class="col-md-2">
+                                    <label class="form-label">Price per KG (₹)</label>
+                                    <div class="input-group">
+                                        <span class="input-group-text">₹</span>
+                                        <input type="number" class="form-control price-per-kg-field" id="pricePerKgInput" 
+                                               step="0.01" min="0" disabled>
+                                    </div>
                                 </div>
-                                <div class="preview-item">
-                                    <div class="preview-label">Price per KG</div>
-                                    <div class="preview-value" id="previewPricePerKg">₹0.00</div>
+
+                                <!-- Total Purchase Price -->
+                                <div class="col-md-2">
+                                    <label class="form-label">Total Price (₹)</label>
+                                    <div class="input-group">
+                                        <span class="input-group-text">₹</span>
+                                        <input type="number" class="form-control" id="totalPriceInput" 
+                                               step="0.01" min="0" disabled>
+                                    </div>
+                                </div>
+
+                                <!-- Add Button -->
+                                <div class="col-12 d-flex justify-content-end">
+                                    <button type="button" class="btn btn-primary" id="addItemBtn" disabled>
+                                        <i class="bi bi-plus-circle me-2"></i>Add Category Item
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Conversion Preview (for categories) -->
+                            <div id="conversionPreview" class="conversion-preview" style="display: none;">
+                                <h6 class="mb-3"><i class="bi bi-calculator me-2"></i>Conversion Preview</h6>
+                                <div class="preview-grid">
+                                    <div class="preview-item">
+                                        <div class="preview-label">Gram per piece</div>
+                                        <div class="preview-value" id="previewGram">0 g</div>
+                                    </div>
+                                    <div class="preview-item">
+                                        <div class="preview-label">Pieces per kg</div>
+                                        <div class="preview-value" id="previewPcsPerKg">0 pcs</div>
+                                    </div>
+                                    <div class="preview-item">
+                                        <div class="preview-label">Total pieces</div>
+                                        <div class="preview-value" id="previewPcs">0 pcs</div>
+                                    </div>
+                                    <div class="preview-item">
+                                        <div class="preview-label">Price per piece</div>
+                                        <div class="preview-value" id="previewPricePerPc">₹0.00</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Product Fields (for direct products) -->
+                        <div id="productFields" style="display: none;">
+                            <div class="row g-4">
+                                <div class="col-md-6">
+                                    <label class="form-label">Select Product <span class="text-danger">*</span></label>
+                                    <select class="form-select" id="productSelect" style="width:100%"></select>
+                                    <div class="mt-2" id="productMeta"></div>
+                                </div>
+
+                                <div class="col-md-3">
+                                    <label class="form-label" id="productQuantityLabel">Quantity (bag)</label>
+                                    <input type="number" class="form-control" id="productQuantityInput" 
+                                           step="1" min="1" disabled>
+                                </div>
+
+                                <div class="col-md-3">
+                                    <label class="form-label" id="productPriceLabel">Price per Bag (₹)</label>
+                                    <div class="input-group">
+                                        <span class="input-group-text">₹</span>
+                                        <input type="number" class="form-control" id="productPriceInput" 
+                                               step="0.01" min="0" disabled>
+                                    </div>
+                                </div>
+
+                                <div class="col-md-3">
+                                    <label class="form-label">Total Price (₹)</label>
+                                    <div class="input-group">
+                                        <span class="input-group-text">₹</span>
+                                        <input type="number" class="form-control" id="productTotalInput" 
+                                               step="0.01" min="0" disabled>
+                                    </div>
+                                </div>
+
+                                <div class="col-12 d-flex justify-content-end">
+                                    <button type="button" class="btn btn-primary" id="addProductItemBtn" disabled>
+                                        <i class="bi bi-plus-circle me-2"></i>Add Product Item
+                                    </button>
                                 </div>
                             </div>
                         </div>
@@ -1634,12 +1915,12 @@ $payment_methods = ['cash', 'card', 'upi', 'bank'];
                                 <thead class="table-light">
                                     <tr>
                                         <th>#</th>
-                                        <th>Category</th>
-                                        <th>Gram/pc</th>
-                                        <th>KG</th>
-                                        <th>Pieces</th>
-                                        <th>Price/pc</th>
-                                        <th>Price/kg</th>
+                                        <th>Type</th>
+                                        <th>Item Name</th>
+                                        <th>Details</th>
+                                        <th>Quantity</th>
+                                        <th>Unit</th>
+                                        <th>Price/Unit</th>
                                         <th>Taxable</th>
                                         <th>GST</th>
                                         <th>Total</th>
@@ -1714,7 +1995,7 @@ $payment_methods = ['cash', 'card', 'upi', 'bank'];
                             </button>
                         </div>
                     </div>
-    </div>
+                </div>
             </form>
         </div>
 
@@ -1810,8 +2091,10 @@ function updatePurchaseFileName(input) {
     // State
     // --------------------------
     let selectedCategory = null;
+    let selectedProduct = null;
     let items = [];
-    let gstType = 'exclusive'; // 'exclusive' or 'inclusive'
+    let gstType = 'exclusive';
+    let currentItemType = 'category'; // 'category' or 'product'
     
     // Last used bank account from PHP
     const lastBankAccount = <?php echo json_encode($last_bank_account); ?>;
@@ -1842,6 +2125,84 @@ function updatePurchaseFileName(input) {
     }
 
     // --------------------------
+    // Item Type Toggle
+    // --------------------------
+    function toggleItemType(type) {
+        currentItemType = type;
+        
+        if (type === 'category') {
+            $('#categoryFields').show();
+            $('#productFields').hide();
+            $('#item_type_category').prop('checked', true);
+            
+            // Reset product selection
+            selectedProduct = null;
+            $('#productSelect').val(null).trigger('change');
+            $('#productQuantityInput').prop('disabled', true).val('');
+            $('#productPriceInput').prop('disabled', true).val('');
+            $('#productTotalInput').prop('disabled', true).val('');
+            $('#addProductItemBtn').prop('disabled', true);
+            
+            // Enable category fields
+            if (selectedCategory) {
+                $('#kgInput').prop('disabled', false);
+                $('#pricePerKgInput').prop('disabled', false);
+                $('#totalPriceInput').prop('disabled', false);
+                checkAddButton();
+            } else {
+                $('#kgInput').prop('disabled', true);
+                $('#pricePerKgInput').prop('disabled', true);
+                $('#totalPriceInput').prop('disabled', true);
+            }
+        } else {
+            $('#categoryFields').hide();
+            $('#productFields').show();
+            $('#item_type_product').prop('checked', true);
+            
+            // Reset category selection
+            selectedCategory = null;
+            $('#categorySelect').val(null).trigger('change');
+            $('#conversionPreview').hide();
+            $('#kgInput').prop('disabled', true).val('');
+            $('#pricePerKgInput').prop('disabled', true).val('');
+            $('#totalPriceInput').prop('disabled', true).val('');
+            $('#addItemBtn').prop('disabled', true);
+            
+            // Enable product fields
+            if (selectedProduct) {
+                $('#productQuantityInput').prop('disabled', false);
+                $('#productPriceInput').prop('disabled', false);
+                $('#productTotalInput').prop('disabled', false);
+                checkProductAddButton();
+                updateProductUnitLabel();
+            } else {
+                $('#productQuantityInput').prop('disabled', true);
+                $('#productPriceInput').prop('disabled', true);
+                $('#productTotalInput').prop('disabled', true);
+            }
+        }
+    }
+    
+    function updateProductUnitLabel() {
+        if (selectedProduct && selectedProduct.meta && selectedProduct.meta.primary_unit) {
+            const unit = selectedProduct.meta.primary_unit;
+            $('#productQuantityLabel').text(`Quantity (${unit})`);
+            $('#productPriceLabel').text(`Price per ${unit.charAt(0).toUpperCase() + unit.slice(1)} (₹)`);
+        } else {
+            $('#productQuantityLabel').text('Quantity (unit)');
+            $('#productPriceLabel').text('Price per Unit (₹)');
+        }
+    }
+
+    // Radio button listeners
+    $('#item_type_category').on('change', function() {
+        if ($(this).is(':checked')) toggleItemType('category');
+    });
+    $('#item_type_product').on('change', function() {
+        if ($(this).is(':checked')) toggleItemType('product');
+    });
+
+    // --------------------------
     // Select2 Initialization
     // --------------------------
     $('#supplierSelect').select2({
@@ -1861,6 +2222,18 @@ function updatePurchaseFileName(input) {
         allowClear: true,
         ajax: {
             url: 'add-purchase.php?ajax=categories',
+            dataType: 'json',
+            delay: 250,
+            data: function(params) { return { term: params.term || '' }; },
+            processResults: function(data) { return data; }
+        }
+    });
+
+    $('#productSelect').select2({
+        placeholder: 'Search product...',
+        allowClear: true,
+        ajax: {
+            url: 'add-purchase.php?ajax=products',
             dataType: 'json',
             delay: 250,
             data: function(params) { return { term: params.term || '' }; },
@@ -1905,7 +2278,7 @@ function updatePurchaseFileName(input) {
     });
 
     // --------------------------
-    // Category Selection (SHOW CURRENT PRICE WITH GST)
+    // Category Selection
     // --------------------------
     function renderCategoryMeta() {
         if (!selectedCategory) return;
@@ -1913,13 +2286,11 @@ function updatePurchaseFileName(input) {
         const meta = selectedCategory.meta || {};
         const currentIncl = parseFloat(meta.purchase_price || 0);
 
-        // read current GST dropdown
         const gstValues = ($('#gstSelect').val() || '0,0').split(',');
         const cgst = parseFloat(gstValues[0]) || 0;
         const sgst = parseFloat(gstValues[1]) || 0;
         const gstPercent = cgst + sgst;
 
-        // show excl derived (for info)
         let currentExcl = currentIncl;
         if (gstPercent > 0) currentExcl = currentIncl / (1 + gstPercent / 100);
 
@@ -1940,33 +2311,83 @@ function updatePurchaseFileName(input) {
         selectedCategory = e.params.data;
         renderCategoryMeta();
 
-        $('#kgInput').prop('disabled', false);
-        $('#pricePerKgInput').prop('disabled', false);
-        $('#totalPriceInput').prop('disabled', false);
-
-        checkAddButton();
-        updateConversionPreview();
+        if (currentItemType === 'category') {
+            $('#kgInput').prop('disabled', false);
+            $('#pricePerKgInput').prop('disabled', false);
+            $('#totalPriceInput').prop('disabled', false);
+            checkAddButton();
+            updateConversionPreview();
+        }
     });
 
     $('#categorySelect').on('select2:clear', function() {
         selectedCategory = null;
         $('#categoryMeta').empty();
-        $('#kgInput').prop('disabled', true).val('');
-        $('#pricePerKgInput').prop('disabled', true).val('');
-        $('#totalPriceInput').prop('disabled', true).val('');
-        $('#addItemBtn').prop('disabled', true);
-        $('#conversionPreview').hide();
-    });
-
-    // Re-render meta whenever GST dropdown changes
-    $('#gstSelect').on('change', function() {
-        if (selectedCategory) renderCategoryMeta();
-        // also line preview changes (since gst affects totals)
-        updateConversionPreview();
+        if (currentItemType === 'category') {
+            $('#kgInput').prop('disabled', true).val('');
+            $('#pricePerKgInput').prop('disabled', true).val('');
+            $('#totalPriceInput').prop('disabled', true).val('');
+            $('#addItemBtn').prop('disabled', true);
+            $('#conversionPreview').hide();
+        }
     });
 
     // --------------------------
-    // Price Calculation Logic (kg, price/kg, total)
+    // Product Selection
+    // --------------------------
+    function renderProductMeta() {
+        if (!selectedProduct) return;
+
+        const meta = selectedProduct.meta || {};
+        const unit = meta.primary_unit || 'pcs';
+        const stock = meta.stock_quantity || 0;
+
+        $('#productMeta').html(`
+            <span class="badge bg-info text-white me-2">
+                <i class="bi bi-tag"></i> Type: ${meta.product_type === 'direct' ? 'Direct Sale' : 'Converted Sale'}
+            </span>
+            <span class="product-unit-badge me-2">
+                <i class="bi bi-box"></i> Unit: ${unit}
+            </span>
+            <span class="badge bg-success text-white me-2">
+                <i class="bi bi-database"></i> Current Stock: ${money2(stock)} ${unit}
+            </span>
+        `);
+        updateProductUnitLabel();
+    }
+
+    $('#productSelect').on('select2:select', function(e) {
+        selectedProduct = e.params.data;
+        renderProductMeta();
+
+        if (currentItemType === 'product') {
+            $('#productQuantityInput').prop('disabled', false);
+            $('#productPriceInput').prop('disabled', false);
+            $('#productTotalInput').prop('disabled', false);
+            checkProductAddButton();
+        }
+    });
+
+    $('#productSelect').on('select2:clear', function() {
+        selectedProduct = null;
+        $('#productMeta').empty();
+        if (currentItemType === 'product') {
+            $('#productQuantityInput').prop('disabled', true).val('');
+            $('#productPriceInput').prop('disabled', true).val('');
+            $('#productTotalInput').prop('disabled', true).val('');
+            $('#addProductItemBtn').prop('disabled', true);
+        }
+        updateProductUnitLabel();
+    });
+
+    // Re-render meta when GST dropdown changes
+    $('#gstSelect').on('change', function() {
+        if (selectedCategory) renderCategoryMeta();
+        if (currentItemType === 'category') updateConversionPreview();
+    });
+
+    // --------------------------
+    // Category Price Calculation
     // --------------------------
     $('#kgInput, #pricePerKgInput, #totalPriceInput').on('input', function() {
         const sourceId = $(this).attr('id');
@@ -1989,17 +2410,43 @@ function updatePurchaseFileName(input) {
         updateConversionPreview();
     });
 
+    // --------------------------
+    // Product Price Calculation
+    // --------------------------
+    $('#productQuantityInput, #productPriceInput, #productTotalInput').on('input', function() {
+        const sourceId = $(this).attr('id');
+        const qty = parseFloat($('#productQuantityInput').val()) || 0;
+        const pricePerUnit = parseFloat($('#productPriceInput').val()) || 0;
+        let totalPrice = parseFloat($('#productTotalInput').val()) || 0;
+
+        if (sourceId === 'productPriceInput' && pricePerUnit > 0 && qty > 0) {
+            totalPrice = pricePerUnit * qty;
+            $('#productTotalInput').val(totalPrice.toFixed(2));
+        } else if (sourceId === 'productTotalInput' && totalPrice > 0 && qty > 0) {
+            const calculatedPricePerUnit = totalPrice / qty;
+            $('#productPriceInput').val(calculatedPricePerUnit.toFixed(2));
+        } else if (sourceId === 'productQuantityInput' && pricePerUnit > 0) {
+            totalPrice = pricePerUnit * qty;
+            $('#productTotalInput').val(totalPrice.toFixed(2));
+        }
+
+        checkProductAddButton();
+    });
+
     function checkAddButton() {
         const kg = parseFloat($('#kgInput').val() || 0);
         const totalPrice = parseFloat($('#totalPriceInput').val() || 0);
         $('#addItemBtn').prop('disabled', !(selectedCategory && kg > 0 && totalPrice > 0));
     }
 
+    function checkProductAddButton() {
+        const qty = parseFloat($('#productQuantityInput').val() || 0);
+        const totalPrice = parseFloat($('#productTotalInput').val() || 0);
+        $('#addProductItemBtn').prop('disabled', !(selectedProduct && qty > 0 && totalPrice > 0));
+    }
+
     // --------------------------
     // GST Calculator
-    // totalPrice is the user-entered "Total Price" field.
-    // If gstType == inclusive => totalPrice includes GST.
-    // If gstType == exclusive => totalPrice excludes GST.
     // --------------------------
     function calculateGST(totalPrice, cgst, sgst) {
         const totalGstPercent = (parseFloat(cgst) || 0) + (parseFloat(sgst) || 0);
@@ -2018,7 +2465,6 @@ function updatePurchaseFileName(input) {
                 total: totalPrice
             };
         } else {
-            // exclusive
             const cgst_amt = (totalPrice * (parseFloat(cgst) || 0)) / 100;
             const sgst_amt = (totalPrice * (parseFloat(sgst) || 0)) / 100;
             return {
@@ -2031,7 +2477,7 @@ function updatePurchaseFileName(input) {
     }
 
     // --------------------------
-    // Conversion Preview
+    // Conversion Preview (Category)
     // --------------------------
     function updateConversionPreview() {
         if (!selectedCategory) return;
@@ -2039,7 +2485,6 @@ function updatePurchaseFileName(input) {
         const meta = selectedCategory.meta || {};
         const kg = parseFloat($('#kgInput').val() || 0);
         const totalPrice = parseFloat($('#totalPriceInput').val() || 0);
-        const pricePerKg = parseFloat($('#pricePerKgInput').val() || 0);
 
         if (!(kg > 0 && totalPrice > 0 && parseFloat(meta.gram_value) > 0)) {
             $('#conversionPreview').hide();
@@ -2049,21 +2494,18 @@ function updatePurchaseFileName(input) {
         const gramValue = parseFloat(meta.gram_value);
         const pcsPerKg = 1000 / gramValue;
         const totalPcs = pcsPerKg * kg;
-        
-        // Calculate price per piece based on total amount
         const pricePerPc = totalPrice / totalPcs;
 
         $('#previewGram').text(gramValue.toFixed(3) + ' g');
         $('#previewPcsPerKg').text(pcsPerKg.toFixed(2) + ' pcs');
         $('#previewPcs').text(totalPcs.toFixed(2) + ' pcs');
         $('#previewPricePerPc').text('₹' + money2(pricePerPc));
-        $('#previewPricePerKg').text('₹' + money2(pricePerKg > 0 ? pricePerKg : (totalPrice / kg)));
 
         $('#conversionPreview').show();
     }
 
     // --------------------------
-    // Add Item
+    // Add Category Item
     // --------------------------
     $('#addItemBtn').click(function() {
         if (!selectedCategory) return;
@@ -2079,25 +2521,22 @@ function updatePurchaseFileName(input) {
             return;
         }
 
-        // GST selected
         const gstValues = ($('#gstSelect').val() || '0,0').split(',');
         const cgst = parseFloat(gstValues[0]) || 0;
         const sgst = parseFloat(gstValues[1]) || 0;
 
-        // Calculate pcs + per pc
         const pcs_per_kg = 1000 / parseFloat(catMeta.gram_value);
         const total_pcs = pcs_per_kg * kg;
-        
-        // GST result based on gstType + entered totalPriceInput
         const gstResult = calculateGST(totalPriceInput, cgst, sgst);
-        
-        // Calculate price per piece from total amount (including GST)
         const price_per_pc = gstResult.total / total_pcs;
 
         const item = {
             id: Date.now() + Math.random(),
+            item_type: 'category',
             cat_id: selectedCategory.id,
             cat_name: (catMeta.category_name || (selectedCategory.text || '').split('•')[0].trim()),
+            product_name: null,
+            product_id: null,
             gram_value: parseFloat(catMeta.gram_value) || 0,
             hsn_code: catMeta.hsn_code || '',
             cgst: cgst,
@@ -2109,15 +2548,15 @@ function updatePurchaseFileName(input) {
             kg_qty: kg,
             qty: total_pcs,
             unit: 'pcs',
-            purchase_price: price_per_pc,        // per pc (based on total amount)
-            price_per_kg: totalPriceInput / kg,   // per kg
-            _base_entered: totalPriceInput        // store base entered amount for recalculation
+            sec_unit: 'kg',
+            purchase_price: price_per_pc,
+            price_per_kg: totalPriceInput / kg,
+            _base_entered: totalPriceInput
         };
 
         items.push(item);
         renderItems();
 
-        // Clear input
         $('#kgInput').val('');
         $('#pricePerKgInput').val('');
         $('#totalPriceInput').val('');
@@ -2125,6 +2564,61 @@ function updatePurchaseFileName(input) {
         selectedCategory = null;
         $('#conversionPreview').hide();
         $('#addItemBtn').prop('disabled', true);
+    });
+
+    // --------------------------
+    // Add Product Item
+    // --------------------------
+    $('#addProductItemBtn').click(function() {
+        if (!selectedProduct) return;
+
+        const prodMeta = selectedProduct.meta || {};
+        const qty = parseFloat($('#productQuantityInput').val()) || 0;
+        const totalPriceInput = parseFloat($('#productTotalInput').val()) || 0;
+
+        if (!(qty > 0 && totalPriceInput > 0)) return;
+
+        const gstValues = ($('#gstSelect').val() || '0,0').split(',');
+        const cgst = parseFloat(gstValues[0]) || 0;
+        const sgst = parseFloat(gstValues[1]) || 0;
+
+        const gstResult = calculateGST(totalPriceInput, cgst, sgst);
+        const price_per_unit = totalPriceInput / qty;
+        const unit = prodMeta.primary_unit || 'pcs';
+
+        const item = {
+            id: Date.now() + Math.random(),
+            item_type: 'product',
+            cat_id: null,
+            product_id: selectedProduct.id,
+            product_name: prodMeta.product_name || (selectedProduct.text || '').split('•')[0].trim(),
+            cat_name: null,
+            gram_value: 0,
+            hsn_code: prodMeta.hsn_code || '',
+            cgst: cgst,
+            sgst: sgst,
+            cgst_amt: gstResult.cgst_amt,
+            sgst_amt: gstResult.sgst_amt,
+            taxable: gstResult.taxable,
+            total: gstResult.total,
+            kg_qty: 0,
+            qty: qty,
+            unit: unit,
+            sec_unit: '',
+            purchase_price: price_per_unit,
+            price_per_kg: 0,
+            _base_entered: totalPriceInput
+        };
+
+        items.push(item);
+        renderItems();
+
+        $('#productQuantityInput').val('');
+        $('#productPriceInput').val('');
+        $('#productTotalInput').val('');
+        $('#productSelect').val(null).trigger('change');
+        selectedProduct = null;
+        $('#addProductItemBtn').prop('disabled', true);
     });
 
     // --------------------------
@@ -2160,18 +2654,31 @@ function updatePurchaseFileName(input) {
             totalGstAmt += (parseFloat(item.cgst_amt) || 0) + (parseFloat(item.sgst_amt) || 0);
             totalAmount += (parseFloat(item.total) || 0);
 
+            const typeBadge = item.item_type === 'category' 
+                ? '<span class="category-badge"><i class="bi bi-layers"></i> Category</span>'
+                : '<span class="product-badge"><i class="bi bi-box"></i> Product</span>';
+            
+            const itemName = item.item_type === 'category' ? item.cat_name : item.product_name;
+            const details = item.item_type === 'category' 
+                ? `${item.gram_value} g/pc • ${item.kg_qty} kg = ${Math.round(item.qty)} pcs`
+                : `Unit: ${item.unit}`;
+            const qtyDisplay = item.qty;
+            const unitDisplay = item.unit;
+            const pricePerUnit = money2(item.purchase_price);
+            const gstPercent = ((item.cgst || 0) + (item.sgst || 0)).toFixed(2);
+
             const row = `
                 <tr>
                     <td>${index + 1}</td>
-                    <td class="fw-semibold">${escapeHtml(item.cat_name)}</td>
-                    <td class="text-end">${(parseFloat(item.gram_value) || 0).toFixed(3)} g</td>
-                    <td class="text-end">${(parseFloat(item.kg_qty) || 0).toFixed(3)} kg</td>
-                    <td class="text-end">${(parseFloat(item.qty) || 0).toFixed(2)} pcs</td>
-                    <td class="text-end">₹${money2(item.purchase_price)}</td>
-                    <td class="text-end">₹${money2(item.price_per_kg)}</td>
+                    <td>${typeBadge}</td>
+                    <td class="fw-semibold">${escapeHtml(itemName)}</td>
+                    <td class="text-muted small">${escapeHtml(details)}</td>
+                    <td class="text-end">${qtyDisplay.toLocaleString()}</td>
+                    <td class="text-end">${escapeHtml(unitDisplay)}</td>
+                    <td class="text-end">₹${pricePerUnit}</td>
                     <td class="text-end">₹${money2(item.taxable)}</td>
                     <td class="text-end">
-                        ${(parseFloat(item.cgst) + parseFloat(item.sgst)).toFixed(2)}%<br>
+                        ${gstPercent}%<br>
                         <small>₹${money2((parseFloat(item.cgst_amt)||0) + (parseFloat(item.sgst_amt)||0))}</small>
                     </td>
                     <td class="text-end fw-bold">₹${money2(item.total)}</td>
@@ -2200,7 +2707,7 @@ function updatePurchaseFileName(input) {
     }
 
     // --------------------------
-    // Recalculate All Items when GST Type changes
+    // Recalculate All Items
     // --------------------------
     function recalculateAllItems() {
         if (items.length === 0) return;
@@ -2208,22 +2715,17 @@ function updatePurchaseFileName(input) {
         items = items.map(it => {
             const cgst = parseFloat(it.cgst || 0);
             const sgst = parseFloat(it.sgst || 0);
-
-            // Use stored base entered amount
             let baseEntered = parseFloat(it._base_entered || 0);
+            
             if (!(baseEntered > 0)) {
-                // derive if not stored
                 baseEntered = (gstType === 'inclusive')
                     ? parseFloat(it.total || 0)
                     : parseFloat(it.taxable || 0);
             }
 
-            // Now compute according to NEW gstType
             const gstResult = calculateGST(baseEntered, cgst, sgst);
-            
-            // Recalculate price per piece from new total
-            const totalPcs = parseFloat(it.qty || 0);
-            const new_price_per_pc = totalPcs > 0 ? gstResult.total / totalPcs : 0;
+            const totalQty = parseFloat(it.qty || 0);
+            const new_price_per_unit = totalQty > 0 ? gstResult.total / totalQty : 0;
 
             return {
                 ...it,
@@ -2232,7 +2734,7 @@ function updatePurchaseFileName(input) {
                 cgst_amt: gstResult.cgst_amt,
                 sgst_amt: gstResult.sgst_amt,
                 total: gstResult.total,
-                purchase_price: new_price_per_pc
+                purchase_price: new_price_per_unit
             };
         });
 
@@ -2261,15 +2763,12 @@ function updatePurchaseFileName(input) {
     };
 
     // --------------------------
-    // Payment Functions with Bank Account Support
+    // Payment Functions
     // --------------------------
     window.addPayment = function(amount = '', method = 'cash', notes = '', bankAccountId = null) {
         const paymentId = Date.now() + Math.random();
-        
-        // Determine if bank fields should be shown
         const showBankFields = (method === 'upi' || method === 'card' || method === 'bank');
         
-        // Generate bank account dropdown HTML
         let bankAccountHtml = '';
         if (showBankFields) {
             const selectedId = bankAccountId || (lastBankAccount ? lastBankAccount.id : '');
@@ -2348,7 +2847,6 @@ function updatePurchaseFileName(input) {
 
         $('#paymentsContainer').append(paymentHtml);
         
-        // Save bank account selection to cookie when changed
         $(`#payment-${paymentId} select[name$="[bank_account_id]"]`).on('change', function() {
             const accountId = this.value;
             if (accountId) {
@@ -2364,9 +2862,7 @@ function updatePurchaseFileName(input) {
         const bankFieldsDiv = document.getElementById('bank-fields-' + paymentId);
         
         if (method === 'upi' || method === 'card' || method === 'bank') {
-            // Check if bank fields already exist
             if (!bankFieldsDiv.querySelector('.bank-selection-row')) {
-                // Create bank fields
                 const selectedId = lastBankAccount ? lastBankAccount.id : '';
                 
                 let bankHtml = `
@@ -2413,7 +2909,6 @@ function updatePurchaseFileName(input) {
                 
                 bankFieldsDiv.innerHTML = bankHtml;
                 
-                // Add change event to save cookie
                 $(`#payment-${paymentId} select[name$="[bank_account_id]"]`).on('change', function() {
                     const accountId = this.value;
                     if (accountId) {
@@ -2422,7 +2917,6 @@ function updatePurchaseFileName(input) {
                 });
             }
         } else {
-            // Remove bank fields
             bankFieldsDiv.innerHTML = '';
         }
     };
@@ -2458,7 +2952,6 @@ function updatePurchaseFileName(input) {
         $('#balanceDueDisplay').text('₹' + money2(balance));
     }
 
-    // Update payment totals on input
     $(document).on('input', 'input[name$="[amount]"]', function() {
         updatePaymentTotals();
     });
@@ -2480,7 +2973,6 @@ function updatePurchaseFileName(input) {
             return false;
         }
 
-        // Validate bank accounts for UPI/Card/Bank payments
         let bankValidationError = false;
         $('.payment-card').each(function() {
             const method = $(this).find('.payment-method').val();
@@ -2507,7 +2999,6 @@ function updatePurchaseFileName(input) {
             return false;
         }
 
-        // Collect payments with amount > 0
         const paymentData = [];
         $('.payment-card').each(function() {
             const amount = parseFloat($(this).find('input[name$="[amount]"]').val() || 0);
@@ -2528,7 +3019,6 @@ function updatePurchaseFileName(input) {
             }
         });
 
-        // Clear existing dynamic payment fields and append clean indexed fields
         $('input[name^="payments["]').remove();
 
         paymentData.forEach((p, i) => {
@@ -2543,7 +3033,6 @@ function updatePurchaseFileName(input) {
             }
         });
 
-        // Disable submit
         $('#submitBtn').prop('disabled', true).html('<span class="spinner-border spinner-border-sm me-2"></span>Saving...');
     });
 
@@ -2558,7 +3047,6 @@ function updatePurchaseFileName(input) {
     // Default Payment
     // --------------------------
     setTimeout(() => { 
-        // Add default payment with last used bank account if available
         const defaultBankId = lastBankAccount ? lastBankAccount.id : null;
         addPayment('', 'cash', '', defaultBankId); 
     }, 400);

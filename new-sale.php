@@ -318,6 +318,13 @@ $categories_query = "SELECT id, category_name, purchase_price, total_quantity, g
                      ORDER BY category_name ASC";
 $categories = mysqli_query($conn, $categories_query);
 
+// Get all direct sale products for direct sale toggle
+$direct_products_query = "SELECT id, product_name, product_type, hsn_code, primary_unit, stock_quantity 
+                          FROM product 
+                          WHERE product_type = 'direct' 
+                          ORDER BY product_name ASC";
+$direct_products = mysqli_query($conn, $direct_products_query);
+
 // Get a default product for category sales (to satisfy foreign key constraint)
 $default_product_query = "SELECT id, product_name FROM product LIMIT 1";
 $default_product_result = mysqli_query($conn, $default_product_query);
@@ -428,6 +435,44 @@ if (isset($_GET['ajax']) && $_GET['ajax'] !== '') {
                     "default_rate"    => (float)$row['purchase_price'],
                     "available_stock" => (float)$row['total_quantity'],
                     "gram_value"      => (float)$row['gram_value']
+                ]
+            ];
+        }
+        json_response(["results" => $items]);
+    }
+
+    if ($ajax === 'direct_products') {
+        $term = escape($conn, trim($_GET['term'] ?? ''));
+
+        $res = mysqli_query($conn, "
+            SELECT id, product_name, product_type, hsn_code, primary_unit, stock_quantity,
+                   COALESCE(g.cgst,0) AS cgst, COALESCE(g.sgst,0) AS sgst, COALESCE(g.igst,0) AS igst
+            FROM product p
+            LEFT JOIN gst g ON p.hsn_code = g.hsn AND g.status = 1
+            WHERE (p.product_name LIKE '%$term%' OR p.hsn_code LIKE '%$term%')
+            AND p.product_type = 'direct'
+            ORDER BY p.product_name ASC
+            LIMIT 50
+        ");
+
+        $items = [];
+        while ($row = mysqli_fetch_assoc($res)) {
+            $label = $row['product_name'];
+            if (!empty($row['primary_unit'])) $label .= " • Unit: " . $row['primary_unit'];
+            if (!empty($row['hsn_code'])) $label .= " • HSN " . $row['hsn_code'];
+
+            $items[] = [
+                "id" => (int)$row['id'],
+                "text" => $label,
+                "meta" => [
+                    "product_name" => (string)$row['product_name'],
+                    "product_type" => (string)$row['product_type'],
+                    "hsn_code"     => (string)$row['hsn_code'],
+                    "primary_unit" => (string)$row['primary_unit'],
+                    "stock_quantity" => (float)$row['stock_quantity'],
+                    "cgst"         => (float)$row['cgst'],
+                    "sgst"         => (float)$row['sgst'],
+                    "igst"         => (float)$row['igst'],
                 ]
             ];
         }
@@ -763,6 +808,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $qty = (float)($it['qty'] ?? 0);
                 $unit = (string)($it['unit'] ?? '');
                 $is_category_sale = isset($it['is_category_sale']) && $it['is_category_sale'] === true;
+                $is_direct_product = isset($it['is_direct_product']) && $it['is_direct_product'] === true;
 
                 if ($cat_id <= 0 || $qty <= 0) {
                     $stock_errors[] = "Invalid item data.";
@@ -770,19 +816,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 if (!$edit_id) {
-                    $cat_res = mysqli_query($conn, "SELECT category_name, total_quantity FROM category WHERE id = $cat_id LIMIT 1");
-                    $cat_data = mysqli_fetch_assoc($cat_res);
+                    if ($is_direct_product && $product_id > 0) {
+                        // Check product stock for direct products
+                        $prod_res = mysqli_query($conn, "SELECT product_name, stock_quantity, primary_unit FROM product WHERE id = $product_id LIMIT 1");
+                        $prod_data = mysqli_fetch_assoc($prod_res);
+                        
+                        if (!$prod_data) {
+                            $stock_errors[] = "Product ID {$product_id} not found.";
+                            continue;
+                        }
+                        
+                        if ((float)$prod_data['stock_quantity'] < $qty) {
+                            $stock_errors[] = "Insufficient stock for product '{$prod_data['product_name']}'. Available: " .
+                                number_format((float)$prod_data['stock_quantity'], 2) . " " . $prod_data['primary_unit'] . ", Required: " .
+                                number_format($qty, 2) . " " . $unit;
+                        }
+                    } else {
+                        // Check category stock for category sales
+                        $cat_res = mysqli_query($conn, "SELECT category_name, total_quantity FROM category WHERE id = $cat_id LIMIT 1");
+                        $cat_data = mysqli_fetch_assoc($cat_res);
 
-                    if (!$cat_data) {
-                        $stock_errors[] = "Category ID {$cat_id} not found.";
-                        continue;
-                    }
+                        if (!$cat_data) {
+                            $stock_errors[] = "Category ID {$cat_id} not found.";
+                            continue;
+                        }
 
-                    // For category sales in KG, check against total_quantity
-                    if ((float)$cat_data['total_quantity'] < $qty) {
-                        $stock_errors[] = "Insufficient stock for category '{$cat_data['category_name']}'. Available: " .
-                            number_format((float)$cat_data['total_quantity'], 2) . " " . $unit . ", Required: " .
-                            number_format($qty, 2) . " " . $unit;
+                        if ((float)$cat_data['total_quantity'] < $qty) {
+                            $stock_errors[] = "Insufficient stock for category '{$cat_data['category_name']}'. Available: " .
+                                number_format((float)$cat_data['total_quantity'], 2) . " " . $unit . ", Required: " .
+                                number_format($qty, 2) . " " . $unit;
+                        }
                     }
                 }
             }
@@ -854,8 +917,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Prefetch category purchase prices
             $cat_prices = [];
             $cat_price_res = mysqli_query($conn, "SELECT id, purchase_price FROM category");
-            while ($r = mysqli_fetch_assoc($cat_price_res)) {
-                $cat_prices[(int)$r['id']] = (float)$r['purchase_price'];
+            if ($cat_price_res) {
+                while ($r = mysqli_fetch_assoc($cat_price_res)) {
+                    $cat_prices[(int)$r['id']] = (float)$r['purchase_price'];
+                }
+            }
+            
+            // Prefetch product prices from purchase_item table (products don't store purchase price directly)
+            $prod_prices = [];
+            $prod_price_res = mysqli_query($conn, "SELECT DISTINCT product_id, purchase_price FROM purchase_item WHERE product_id IS NOT NULL");
+            if ($prod_price_res) {
+                while ($r = mysqli_fetch_assoc($prod_price_res)) {
+                    $prod_prices[(int)$r['product_id']] = (float)$r['purchase_price'];
+                }
             }
 
             mysqli_begin_transaction($conn);
@@ -936,9 +1010,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $invoice_id = mysqli_insert_id($conn);
                 }
 
-                // Insert items with purchase_price from category
+                // Insert items with purchase_price from category or product
                 foreach ($items as $li) {
-                    // For category sales, use default product_id to satisfy foreign key
                     $product_id = (int)$li['product_id'];
                     if ($product_id <= 0) {
                         $product_id = $default_product_id;
@@ -969,9 +1042,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $sgst_i = (float)($li['sgst'] ?? 0);
                     $sgst_amt_i = (float)($li['sgst_amt'] ?? 0) * $factor;
 
-                    $purchase_price = $cat_prices[$cat_id] ?? null;
+                    // Determine purchase price based on item type
+                    $is_direct_product = isset($li['is_direct_product']) && $li['is_direct_product'] === true;
+                    if ($is_direct_product && isset($prod_prices[$cat_id])) {
+                        $purchase_price = $prod_prices[$cat_id];
+                    } else {
+                        $purchase_price = $cat_prices[$cat_id] ?? null;
+                    }
+                    
                     if ($purchase_price === null) {
-                        throw new Exception("Category purchase price not found for category ID: $cat_id");
+                        $purchase_price = 0;
                     }
                     $purchase_price = (float)$purchase_price;
 
@@ -993,8 +1073,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     // Stock reduce only for NEW invoices
                     if (!$edit_id) {
-                        $update_stock = mysqli_query($conn, "UPDATE category SET total_quantity = total_quantity - $qty WHERE id = $cat_id");
-                        if (!$update_stock) throw new Exception("Failed to update stock for category: " . $cat_name);
+                        if ($is_direct_product && $product_id > 0) {
+                            // Reduce product stock for direct products
+                            $update_stock = mysqli_query($conn, "UPDATE product SET stock_quantity = stock_quantity - $qty WHERE id = $product_id");
+                            if (!$update_stock) throw new Exception("Failed to update stock for product: " . $product_name);
+                        } else {
+                            // Reduce category stock for category sales
+                            $update_stock = mysqli_query($conn, "UPDATE category SET total_quantity = total_quantity - $qty WHERE id = $cat_id");
+                            if (!$update_stock) throw new Exception("Failed to update stock for category: " . $cat_name);
+                        }
                     }
                 }
 
@@ -1274,6 +1361,36 @@ if ($current_user_id == 0) {
             font-size: 12px;
             margin-bottom: 8px;
         }
+        .direct-product-section {
+            background: #eef2ff;
+            border: 1px solid #c7d2fe;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 15px;
+        }
+        .direct-product-label {
+            font-weight: 600;
+            color: #4338ca;
+            font-size: 12px;
+            margin-bottom: 8px;
+        }
+        .mode-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            background: #f1f5f9;
+            padding: 4px 8px;
+            border-radius: 30px;
+        }
+        .mode-toggle .btn-sm {
+            padding: 4px 12px;
+            font-size: 11px;
+            border-radius: 30px;
+        }
+        .mode-toggle .btn-sm.active {
+            background: #2563eb;
+            color: white;
+        }
         .item-type-badge {
             display: inline-block;
             padding: 2px 6px;
@@ -1289,6 +1406,10 @@ if ($current_user_id == 0) {
         .item-type-category {
             background: #dcfce7;
             color: #166534;
+        }
+        .item-type-direct {
+            background: #e0e7ff;
+            color: #3730a3;
         }
         @media (max-width: 768px) {
             .full-screen { padding:10px; }
@@ -1536,8 +1657,19 @@ if ($current_user_id == 0) {
             <input type="hidden" name="shipping_address" id="shipping_address" value="">
         </div>
 
-        <!-- Product Sale Section -->
+        <!-- Sale Mode Toggle -->
         <div class="card-custom">
+            <div class="card-header-custom">
+                <h5><i class="bi bi-cart-plus me-1"></i>Sale Mode</h5>
+                <div class="mode-toggle">
+                    <button type="button" class="btn btn-sm <?php echo !isset($_COOKIE['sale_mode']) || $_COOKIE['sale_mode'] === 'standard' ? 'active' : ''; ?>" id="standardModeBtn" onclick="setSaleMode('standard')">Standard</button>
+                    <button type="button" class="btn btn-sm <?php echo isset($_COOKIE['sale_mode']) && $_COOKIE['sale_mode'] === 'direct' ? 'active' : ''; ?>" id="directModeBtn" onclick="setSaleMode('direct')">Direct Products</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Standard Product Sale Section -->
+        <div id="standardProductSection" class="card-custom" style="display: <?php echo !isset($_COOKIE['sale_mode']) || $_COOKIE['sale_mode'] === 'standard' ? 'block' : 'none'; ?>;">
             <div class="card-header-custom">
                 <h5><i class="bi bi-box me-1"></i>Add Product Item (Pieces/Bag)</h5>
                 <span class="badge-custom" id="gstPricingBadge">GST Inclusive Pricing</span>
@@ -1602,6 +1734,65 @@ if ($current_user_id == 0) {
                         <div class="line-total" id="lineTotalText">₹0.00</div>
                         <div class="total-breakdown" id="lineBreakdown"></div>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Direct Product Sale Section (NEW) -->
+        <div id="directProductSection" class="direct-product-section" style="display: <?php echo isset($_COOKIE['sale_mode']) && $_COOKIE['sale_mode'] === 'direct' ? 'block' : 'none'; ?>;">
+            <div class="d-flex align-items-center gap-2 mb-2">
+                <span class="direct-product-label"><i class="bi bi-box-seam"></i> Direct Product Sale</span>
+                <span class="badge-custom">Sell finished products directly</span>
+            </div>
+
+            <div class="row g-2 align-items-end">
+                <div class="col-md-5">
+                    <label class="form-label">Select Product</label>
+                    <select class="form-select" id="directProductSelect" style="width:100%">
+                        <option value="">Choose product...</option>
+                        <?php 
+                        if ($direct_products && mysqli_num_rows($direct_products) > 0):
+                            mysqli_data_seek($direct_products, 0);
+                            while ($prod = mysqli_fetch_assoc($direct_products)): 
+                        ?>
+                            <option value="<?php echo $prod['id']; ?>" 
+                                    data-name="<?php echo htmlspecialchars($prod['product_name']); ?>"
+                                    data-unit="<?php echo htmlspecialchars($prod['primary_unit'] ?: 'pcs'); ?>"
+                                    data-stock="<?php echo $prod['stock_quantity']; ?>"
+                                    data-hsn="<?php echo htmlspecialchars($prod['hsn_code']); ?>"
+                                    data-cgst="<?php echo isset($prod['cgst']) ? $prod['cgst'] : 0; ?>"
+                                    data-sgst="<?php echo isset($prod['sgst']) ? $prod['sgst'] : 0; ?>">
+                                <?php echo htmlspecialchars($prod['product_name']); ?> 
+                                (Stock: <?php echo number_format($prod['stock_quantity'], 2); ?> <?php echo $prod['primary_unit'] ?: 'pcs'; ?>)
+                            </option>
+                        <?php endwhile; endif; ?>
+                    </select>
+                </div>
+
+                <div class="col-md-3">
+                    <label class="form-label">Selling Price (₹/unit)</label>
+                    <div class="d-flex align-items-center">
+                        <span class="me-1">₹</span>
+                        <input type="number" class="form-control" id="directSellingPrice" step="0.01" min="0" placeholder="Price per unit">
+                    </div>
+                </div>
+
+                <div class="col-md-2">
+                    <label class="form-label">Quantity</label>
+                    <input type="number" class="form-control" id="directQty" step="0.001" min="0.001" placeholder="Enter quantity">
+                    <small class="text-muted" id="directMaxQtyHint"></small>
+                </div>
+
+                <div class="col-md-2">
+                    <button type="button" class="btn btn-primary w-100" id="addDirectProductBtn">
+                        <i class="bi bi-plus-circle"></i> Add Product
+                    </button>
+                </div>
+            </div>
+
+            <div class="row mt-2">
+                <div class="col-md-12">
+                    <div id="directProductInfo" class="tiny text-muted" style="display: none;"></div>
                 </div>
             </div>
         </div>
@@ -1692,17 +1883,21 @@ if ($current_user_id == 0) {
                     <?php else: ?>
                         <?php foreach ($cart_items as $idx => $it): 
                             $is_category_sale = isset($it['is_category_sale']) && $it['is_category_sale'] === true;
-                            $display_name = $is_category_sale ? $it['cat_name'] : $it['product_name'] . ' - ' . $it['cat_name'];
+                            $is_direct_product = isset($it['is_direct_product']) && $it['is_direct_product'] === true;
+                            if ($is_direct_product) {
+                                $display_name = $it['product_name'];
+                                $type_badge = '<span class="item-type-direct">Direct Product</span>';
+                            } elseif ($is_category_sale) {
+                                $display_name = $it['cat_name'];
+                                $type_badge = '<span class="badge-category-item">Category (KG)</span>';
+                            } else {
+                                $display_name = $it['product_name'] . ' - ' . $it['cat_name'];
+                                $type_badge = '<span class="badge-unit">Product</span>';
+                            }
                         ?>
                         <tr>
                             <td><?php echo $idx + 1; ?></td>
-                            <td>
-                                <?php if ($is_category_sale): ?>
-                                    <span class="badge-category-item">Category (KG)</span>
-                                <?php else: ?>
-                                    <span class="badge-unit">Product</span>
-                                <?php endif; ?>
-                            </td>
+                            <td><?php echo $type_badge; ?></td>
                             <td><?php echo htmlspecialchars($display_name); ?></td>
                             <td><span class="badge-unit"><?php echo htmlspecialchars($it['unit']); ?></span></td>
                             <td class="text-end"><?php echo number_format((float)$it['qty'], 3); ?></td>
@@ -1844,6 +2039,23 @@ if ($current_user_id == 0) {
 <?php include 'includes/scripts.php'; ?>
 <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 <script>
+// Sale mode toggle function
+function setSaleMode(mode) {
+    document.cookie = "sale_mode=" + mode + "; path=/; max-age=" + (30 * 24 * 60 * 60);
+    
+    if (mode === 'direct') {
+        document.getElementById('standardProductSection').style.display = 'none';
+        document.getElementById('directProductSection').style.display = 'block';
+        document.getElementById('standardModeBtn').classList.remove('active');
+        document.getElementById('directModeBtn').classList.add('active');
+    } else {
+        document.getElementById('standardProductSection').style.display = 'block';
+        document.getElementById('directProductSection').style.display = 'none';
+        document.getElementById('directModeBtn').classList.remove('active');
+        document.getElementById('standardModeBtn').classList.add('active');
+    }
+}
+
 (function() {
     let selectedProduct = null;
     let selectedCategory = null;
@@ -2076,11 +2288,130 @@ if ($current_user_id == 0) {
         }
     });
 
-    // Bulk category select (simple dropdown, not ajax)
+    // Direct Product Select2
+    $('#directProductSelect').select2({
+        placeholder: 'Search direct sale product...',
+        allowClear: true,
+        width: '100%'
+    });
+
+    // Bulk category select
     $('#bulkCategorySelect').select2({
         placeholder: 'Choose category for bulk sale...',
         allowClear: true,
         width: '100%'
+    });
+
+    // Direct product selection change
+    $('#directProductSelect').on('select2:select', function(e) {
+        const selected = e.params.data;
+        const stock = selected.element.dataset.stock || 0;
+        const unit = selected.element.dataset.unit || 'pcs';
+        document.getElementById('directMaxQtyHint').innerHTML = `Available stock: ${parseFloat(stock).toFixed(2)} ${unit}`;
+        
+        const purchasePrice = parseFloat(selected.element.dataset.purchasePrice || 0);
+        if (purchasePrice > 0) {
+            const suggestedPrice = (purchasePrice * 1.2).toFixed(2);
+            document.getElementById('directSellingPrice').placeholder = `Suggested: ₹${suggestedPrice}`;
+        }
+        
+        document.getElementById('directProductInfo').style.display = 'block';
+        document.getElementById('directProductInfo').innerHTML = `<i class="bi bi-info-circle"></i> Selected: ${selected.text}`;
+    });
+
+    $('#directProductSelect').on('select2:clear', function() {
+        document.getElementById('directMaxQtyHint').innerHTML = '';
+        document.getElementById('directProductInfo').style.display = 'none';
+    });
+
+    // Add direct product item
+    document.getElementById('addDirectProductBtn').addEventListener('click', function() {
+        const select = document.getElementById('directProductSelect');
+        const selected = select.options[select.selectedIndex];
+        
+        if (!select.value) {
+            alert('Please select a product');
+            return;
+        }
+        
+        const sellingPrice = parseFloat(document.getElementById('directSellingPrice').value);
+        if (!sellingPrice || sellingPrice <= 0) {
+            alert('Please enter a valid selling price');
+            return;
+        }
+        
+        const qty = parseFloat(document.getElementById('directQty').value);
+        if (!qty || qty <= 0) {
+            alert('Please enter quantity');
+            return;
+        }
+        
+        const productId = select.value;
+        const productName = selected.dataset.name;
+        const unit = selected.dataset.unit || 'pcs';
+        const stock = parseFloat(selected.dataset.stock || 0);
+        const hsnCode = selected.dataset.hsn || '';
+        const cgstRate = parseFloat(selected.dataset.cgst || 0);
+        const sgstRate = parseFloat(selected.dataset.sgst || 0);
+        
+        // Check stock
+        const isQuotation = tabQuotation.classList.contains('active');
+        const isEdit = <?php echo $edit_id ? 'true' : 'false'; ?>;
+        
+        if (!isQuotation && !isEdit && qty > stock) {
+            alert(`Insufficient stock! Available: ${stock.toFixed(2)} ${unit}, Required: ${qty.toFixed(2)} ${unit}`);
+            return;
+        }
+        
+        // Calculate total
+        const totalAmount = qty * sellingPrice;
+        const isGstInvoice = document.getElementById('is_gst').value === '1';
+        
+        let taxableAmount = totalAmount;
+        let cgstAmt = 0;
+        let sgstAmt = 0;
+        
+        if (isGstInvoice && (cgstRate + sgstRate) > 0) {
+            const totalGst = cgstRate + sgstRate;
+            const gstFactor = 1 + (totalGst / 100);
+            taxableAmount = totalAmount / gstFactor;
+            const gstAmt = totalAmount - taxableAmount;
+            cgstAmt = gstAmt / 2;
+            sgstAmt = gstAmt / 2;
+        }
+        
+        // Create item for direct product
+        const newItem = {
+            product_id: parseInt(productId),
+            product_name: productName,
+            hsn_code: hsnCode,
+            cat_id: parseInt(productId),
+            cat_name: productName,
+            unit: unit,
+            qty: qty,
+            pcs_per_bag: 0,
+            rate: sellingPrice,
+            converted_qty: qty,
+            no_of_pcs: qty,
+            total: totalAmount,
+            taxable: taxableAmount,
+            cgst: cgstRate,
+            sgst: sgstRate,
+            cgst_amt: cgstAmt,
+            sgst_amt: sgstAmt,
+            is_category_sale: false,
+            is_direct_product: true
+        };
+        
+        items.push(newItem);
+        renderItems();
+        
+        // Clear inputs
+        $('#directProductSelect').val('').trigger('change');
+        document.getElementById('directSellingPrice').value = '';
+        document.getElementById('directQty').value = '';
+        document.getElementById('directMaxQtyHint').innerHTML = '';
+        document.getElementById('directProductInfo').style.display = 'none';
     });
 
     // Customer details
@@ -2096,13 +2427,11 @@ if ($current_user_id == 0) {
                 $('#custEmail').text(c.email || '-');
                 $('#custGST').text(c.gst_number || '-');
                 $('#custAddress').text(c.address || '-');
-                // Auto-populate shipping address from customer's shipping_address field
                 document.getElementById('shipping_address').value = c.shipping_address || '';
             });
     });
     $('#customerSelect').on('select2:clear', function() {
         $('#customerDetails').hide();
-        // Clear shipping address when customer is cleared
         document.getElementById('shipping_address').value = '';
     });
 
@@ -2120,7 +2449,6 @@ if ($current_user_id == 0) {
                     $('#custEmail').text(c.email || '-');
                     $('#custGST').text(c.gst_number || '-');
                     $('#custAddress').text(c.address || '-');
-                    // Auto-populate shipping address from customer's shipping_address field
                     document.getElementById('shipping_address').value = c.shipping_address || '';
                 });
         }
@@ -2133,7 +2461,6 @@ if ($current_user_id == 0) {
         const stock = selected.element.dataset.stock || 0;
         document.getElementById('bulkMaxKgHint').innerHTML = `Available stock: ${parseFloat(stock).toFixed(2)} KG`;
         
-        // Suggest selling price based on purchase price
         const purchasePrice = parseFloat(selected.element.dataset.purchasePrice || 0);
         if (purchasePrice > 0) {
             const suggestedPrice = (purchasePrice * 1.2).toFixed(2);
@@ -2188,8 +2515,6 @@ if ($current_user_id == 0) {
         // Calculate total
         const totalAmount = kgQty * sellingPrice;
         
-        // Use default GST rates - you can customize this as needed
-        // For category sales, you might want to fetch GST rates from somewhere
         const cgst = 0;
         const sgst = 0;
         const isGstInvoice = document.getElementById('is_gst').value === '1';
@@ -2207,11 +2532,9 @@ if ($current_user_id == 0) {
             sgstAmt = gstAmt / 2;
         }
         
-        // Get default product ID from PHP
         const defaultProductId = <?php echo $default_product_id; ?>;
         const defaultProductName = '<?php echo $default_product_name; ?>';
         
-        // Create item - ensure product_id is set to default product
         const newItem = {
             product_id: defaultProductId,
             product_name: defaultProductName,
@@ -2222,7 +2545,7 @@ if ($current_user_id == 0) {
             qty: kgQty,
             pcs_per_bag: 0,
             rate: sellingPrice,
-            converted_qty: kgQty, // No conversion, keep as KG
+            converted_qty: kgQty,
             no_of_pcs: kgQty,
             total: totalAmount,
             taxable: taxableAmount,
@@ -2230,13 +2553,13 @@ if ($current_user_id == 0) {
             sgst: sgst,
             cgst_amt: cgstAmt,
             sgst_amt: sgstAmt,
-            is_category_sale: true // Flag to identify category sales
+            is_category_sale: true,
+            is_direct_product: false
         };
         
         items.push(newItem);
         renderItems();
         
-        // Clear inputs
         $('#bulkCategorySelect').val('').trigger('change');
         document.getElementById('bulkSellingPrice').value = '';
         document.getElementById('bulkKgQuantity').value = '';
@@ -2460,10 +2783,19 @@ if ($current_user_id == 0) {
         } else {
             items.forEach((it, idx) => {
                 const isCategorySale = it.is_category_sale === true;
-                const displayName = isCategorySale ? it.cat_name : (it.product_name + ' - ' + it.cat_name);
-                const typeBadge = isCategorySale ? 
-                    '<span class="badge-category-item">Category (KG)</span>' : 
-                    '<span class="badge-unit">Product</span>';
+                const isDirectProduct = it.is_direct_product === true;
+                let displayName, typeBadge;
+                
+                if (isDirectProduct) {
+                    displayName = it.product_name;
+                    typeBadge = '<span class="item-type-direct">Direct Product</span>';
+                } else if (isCategorySale) {
+                    displayName = it.cat_name;
+                    typeBadge = '<span class="badge-category-item">Category (KG)</span>';
+                } else {
+                    displayName = it.product_name + ' - ' + it.cat_name;
+                    typeBadge = '<span class="badge-unit">Product</span>';
+                }
                 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
@@ -2577,7 +2909,8 @@ if ($current_user_id == 0) {
             sgst: sgst,
             cgst_amt: cgstAmt,
             sgst_amt: sgstAmt,
-            is_category_sale: false // Regular product sale
+            is_category_sale: false,
+            is_direct_product: false
         };
 
         items.push(newItem);
@@ -2736,14 +3069,12 @@ if ($current_user_id == 0) {
                 alert('Invalid item quantity detected.');
                 return false;
             }
-            // Ensure product_id is set for all items
             if (!items[i].product_id || items[i].product_id <= 0) {
                 items[i].product_id = <?php echo $default_product_id; ?>;
                 items[i].product_name = '<?php echo $default_product_name; ?>';
             }
         }
 
-        // Validate bank account for UPI or Bank payments only in invoice mode
         if (tabInvoice.classList.contains('active')) {
             const upiAmount = parseFloat(document.getElementById('upi_amount')?.value || 0);
             const bankAmount = parseFloat(document.getElementById('bank_amount')?.value || 0);
