@@ -32,6 +32,9 @@ $customer = $customer_result->fetch_assoc();
 $success = '';
 $error = '';
 
+// Get bank accounts for dropdown
+$bank_accounts = $conn->query("SELECT id, account_name, bank_name, current_balance FROM bank_accounts WHERE status = 1 ORDER BY is_default DESC, account_name ASC");
+
 // ==================== HANDLE OPENING BALANCE PAYMENT ====================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'collect_opening_balance') {
     // Check if user is admin for payment operations
@@ -41,7 +44,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $opening_balance = floatval($customer['opening_balance']);
         $paid_amount = floatval($_POST['paid_amount']);
         $payment_method = $_POST['payment_method'] ?? 'cash';
+        $bank_account_id = isset($_POST['bank_account_id']) && $_POST['bank_account_id'] !== '' ? intval($_POST['bank_account_id']) : null;
         $reference_no = trim($_POST['reference_no'] ?? '');
+        $cheque_number = trim($_POST['cheque_number'] ?? '');
+        $cheque_date = !empty($_POST['cheque_date']) ? $_POST['cheque_date'] : null;
+        $cheque_bank = trim($_POST['cheque_bank'] ?? '');
+        $upi_ref_no = trim($_POST['upi_ref_no'] ?? '');
+        $transaction_ref_no = trim($_POST['transaction_ref_no'] ?? '');
         $notes = trim($_POST['notes'] ?? '');
         
         if ($opening_balance > 0) {
@@ -66,8 +75,115 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     $insert_payment->bind_param("idsssi", $customer_id, $paid_amount, $payment_method, $reference_no, $notes, $_SESSION['user_id']);
                     $insert_payment->execute();
                     
+                    // Create bank transaction for non-cash payments
+                    if ($payment_method !== 'credit' && $paid_amount > 0 && in_array($payment_method, ['bank', 'upi', 'card', 'cheque'])) {
+                        if (!$bank_account_id) {
+                            throw new Exception("Bank account is required for {$payment_method} payment.");
+                        }
+                        
+                        // Verify bank account exists and is active
+                        $bank_check = $conn->prepare("SELECT id, current_balance FROM bank_accounts WHERE id = ? AND status = 1");
+                        $bank_check->bind_param("i", $bank_account_id);
+                        $bank_check->execute();
+                        $bank_data = $bank_check->get_result()->fetch_assoc();
+                        
+                        if (!$bank_data) {
+                            throw new Exception("Selected bank account is not active or does not exist.");
+                        }
+                        $bank_check->close();
+                        
+                        // Insert bank transaction
+                        $transaction_date = date('Y-m-d');
+                        $party_name = $customer['customer_name'];
+                        
+                        $tx_stmt = $conn->prepare("
+                            INSERT INTO bank_transactions 
+                            (bank_account_id, transaction_date, transaction_type, reference_type, reference_id, 
+                             reference_number, party_name, party_type, description, amount, payment_method, 
+                             status, cheque_number, cheque_date, cheque_bank, upi_ref_no, transaction_ref_no, 
+                             notes, created_by) 
+                            VALUES (?, ?, 'sale_credit', 'opening_balance', NULL, 
+                                    ?, ?, 'customer', ?, ?, ?, 'completed', 
+                                    ?, ?, ?, ?, ?, ?, ?)
+                        ");
+                        
+                        $description = "Opening balance payment received from {$customer['customer_name']}";
+                        $ref_number = "OPENING-" . date('Ymd') . "-" . $customer_id;
+                        
+                        $tx_stmt->bind_param("issssdsssssssi", 
+                            $bank_account_id, $transaction_date, $ref_number, $party_name, 
+                            $description, $paid_amount, $payment_method,
+                            $cheque_number, $cheque_date, $cheque_bank, $upi_ref_no, $transaction_ref_no,
+                            $notes, $_SESSION['user_id']
+                        );
+                        
+                        if (!$tx_stmt->execute()) {
+                            throw new Exception("Failed to create bank transaction: " . $conn->error);
+                        }
+                        $tx_stmt->close();
+                        
+                        // Update bank account balance
+                        $new_balance = $bank_data['current_balance'] + $paid_amount;
+                        $update_balance = $conn->prepare("UPDATE bank_accounts SET current_balance = ? WHERE id = ?");
+                        $update_balance->bind_param("di", $new_balance, $bank_account_id);
+                        
+                        if (!$update_balance->execute()) {
+                            throw new Exception("Failed to update bank account balance.");
+                        }
+                        $update_balance->close();
+                    } elseif ($payment_method === 'cash') {
+                        // For cash payments, try to find a cash account
+                        $cash_account_query = $conn->prepare("SELECT id FROM bank_accounts WHERE account_name LIKE '%CASH%' OR account_type LIKE '%cash%' LIMIT 1");
+                        $cash_account_query->execute();
+                        $cash_account = $cash_account_query->get_result()->fetch_assoc();
+                        $cash_account_query->close();
+                        
+                        if ($cash_account) {
+                            // Insert cash transaction
+                            $transaction_date = date('Y-m-d');
+                            $party_name = $customer['customer_name'];
+                            $ref_number = "CASH-OPENING-" . date('Ymd') . "-" . $customer_id;
+                            
+                            $tx_stmt = $conn->prepare("
+                                INSERT INTO bank_transactions 
+                                (bank_account_id, transaction_date, transaction_type, reference_type, reference_id, 
+                                 reference_number, party_name, party_type, description, amount, payment_method, 
+                                 status, notes, created_by) 
+                                VALUES (?, ?, 'sale_credit', 'opening_balance', NULL, 
+                                        ?, ?, 'customer', ?, ?, 'cash', 'completed', ?, ?)
+                            ");
+                            
+                            $description = "Cash payment received for opening balance from {$customer['customer_name']}";
+                            
+                            $tx_stmt->bind_param("issssdsi", 
+                                $cash_account['id'], $transaction_date, $ref_number, $party_name,
+                                $description, $paid_amount, $notes, $_SESSION['user_id']
+                            );
+                            
+                            if ($tx_stmt->execute()) {
+                                $tx_stmt->close();
+                                
+                                // Update cash account balance
+                                $update_balance = $conn->prepare("UPDATE bank_accounts SET current_balance = current_balance + ? WHERE id = ?");
+                                $update_balance->bind_param("di", $paid_amount, $cash_account['id']);
+                                $update_balance->execute();
+                                $update_balance->close();
+                            }
+                        }
+                    }
+                    
                     // Log activity
                     $log_desc = "Opening balance payment collected of ₹" . number_format($paid_amount, 2) . " from customer: " . $customer['customer_name'] . " via " . strtoupper($payment_method);
+                    if (in_array($payment_method, ['bank', 'upi', 'card', 'cheque']) && $bank_account_id) {
+                        $bank_query = $conn->prepare("SELECT account_name FROM bank_accounts WHERE id = ?");
+                        $bank_query->bind_param("i", $bank_account_id);
+                        $bank_query->execute();
+                        $bank_info = $bank_query->get_result()->fetch_assoc();
+                        if ($bank_info) {
+                            $log_desc .= " to " . $bank_info['account_name'];
+                        }
+                        $bank_query->close();
+                    }
                     $log_query = "INSERT INTO activity_log (user_id, action, description) VALUES (?, 'payment', ?)";
                     $log_stmt = $conn->prepare($log_query);
                     $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
@@ -105,6 +221,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $invoice_id = intval($_POST['invoice_id']);
         $paid_amount = floatval($_POST['paid_amount']);
         $payment_method = $_POST['payment_method'] ?? 'cash';
+        $bank_account_id = isset($_POST['bank_account_id']) && $_POST['bank_account_id'] !== '' ? intval($_POST['bank_account_id']) : null;
+        $reference_no = trim($_POST['reference_no'] ?? '');
+        $cheque_number = trim($_POST['cheque_number'] ?? '');
+        $cheque_date = !empty($_POST['cheque_date']) ? $_POST['cheque_date'] : null;
+        $cheque_bank = trim($_POST['cheque_bank'] ?? '');
+        $upi_ref_no = trim($_POST['upi_ref_no'] ?? '');
+        $transaction_ref_no = trim($_POST['transaction_ref_no'] ?? '');
+        $notes = trim($_POST['notes'] ?? '');
         
         // Get invoice details
         $invoice_query = $conn->prepare("SELECT inv_num, total, cash_received, pending_amount FROM invoice WHERE id = ? AND customer_id = ?");
@@ -128,8 +252,135 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     $update->bind_param("ddsi", $new_paid, $new_pending, $payment_method, $invoice_id);
                     $update->execute();
                     
+                    // Create bank transaction for non-cash payments
+                    if ($payment_method !== 'credit' && $paid_amount > 0 && in_array($payment_method, ['bank', 'upi', 'card', 'cheque'])) {
+                        if (!$bank_account_id) {
+                            throw new Exception("Bank account is required for {$payment_method} payment.");
+                        }
+                        
+                        // Verify bank account exists and is active
+                        $bank_check = $conn->prepare("SELECT id, current_balance FROM bank_accounts WHERE id = ? AND status = 1");
+                        $bank_check->bind_param("i", $bank_account_id);
+                        $bank_check->execute();
+                        $bank_data = $bank_check->get_result()->fetch_assoc();
+                        
+                        if (!$bank_data) {
+                            throw new Exception("Selected bank account is not active or does not exist.");
+                        }
+                        $bank_check->close();
+                        
+                        // Insert bank transaction
+                        $transaction_date = date('Y-m-d');
+                        $party_name = $customer['customer_name'];
+                        
+                        $tx_stmt = $conn->prepare("
+                            INSERT INTO bank_transactions 
+                            (bank_account_id, transaction_date, transaction_type, reference_type, reference_id, 
+                             reference_number, party_name, party_type, description, amount, payment_method, 
+                             status, cheque_number, cheque_date, cheque_bank, upi_ref_no, transaction_ref_no, 
+                             notes, created_by) 
+                            VALUES (?, ?, 'sale', 'invoice', ?, 
+                                    ?, ?, 'customer', ?, ?, ?, 'completed', 
+                                    ?, ?, ?, ?, ?, ?, ?)
+                        ");
+                        
+                        $description = "Payment received for invoice {$invoice['inv_num']} from {$customer['customer_name']}";
+                        
+                        $tx_stmt->bind_param("isisdsssssssi", 
+                            $bank_account_id, $transaction_date, $invoice_id, $invoice['inv_num'], $party_name, 
+                            $description, $paid_amount, $payment_method,
+                            $cheque_number, $cheque_date, $cheque_bank, $upi_ref_no, $transaction_ref_no,
+                            $notes, $_SESSION['user_id']
+                        );
+                        
+                        if (!$tx_stmt->execute()) {
+                            throw new Exception("Failed to create bank transaction: " . $conn->error);
+                        }
+                        
+                        $transaction_id = $tx_stmt->insert_id;
+                        $tx_stmt->close();
+                        
+                        // Update invoice with bank transaction reference
+                        $update_invoice = $conn->prepare("
+                            UPDATE invoice SET bank_account_id = ?, bank_transaction_id = ? 
+                            WHERE id = ?
+                        ");
+                        $update_invoice->bind_param("iii", $bank_account_id, $transaction_id, $invoice_id);
+                        $update_invoice->execute();
+                        $update_invoice->close();
+                        
+                        // Update bank account balance
+                        $new_balance = $bank_data['current_balance'] + $paid_amount;
+                        $update_balance = $conn->prepare("UPDATE bank_accounts SET current_balance = ? WHERE id = ?");
+                        $update_balance->bind_param("di", $new_balance, $bank_account_id);
+                        
+                        if (!$update_balance->execute()) {
+                            throw new Exception("Failed to update bank account balance.");
+                        }
+                        $update_balance->close();
+                    } elseif ($payment_method === 'cash') {
+                        // For cash payments, try to find a cash account
+                        $cash_account_query = $conn->prepare("SELECT id FROM bank_accounts WHERE account_name LIKE '%CASH%' OR account_type LIKE '%cash%' LIMIT 1");
+                        $cash_account_query->execute();
+                        $cash_account = $cash_account_query->get_result()->fetch_assoc();
+                        $cash_account_query->close();
+                        
+                        if ($cash_account) {
+                            // Insert cash transaction
+                            $transaction_date = date('Y-m-d');
+                            $party_name = $customer['customer_name'];
+                            
+                            $tx_stmt = $conn->prepare("
+                                INSERT INTO bank_transactions 
+                                (bank_account_id, transaction_date, transaction_type, reference_type, reference_id, 
+                                 reference_number, party_name, party_type, description, amount, payment_method, 
+                                 status, notes, created_by) 
+                                VALUES (?, ?, 'sale', 'invoice', ?, 
+                                        ?, ?, 'customer', ?, ?, 'cash', 'completed', ?, ?)
+                            ");
+                            
+                            $description = "Cash payment received for invoice {$invoice['inv_num']} from {$customer['customer_name']}";
+                            
+                            $tx_stmt->bind_param("isisddssi", 
+                                $cash_account['id'], $transaction_date, $invoice_id,
+                                $invoice['inv_num'], $party_name, $description, $paid_amount,
+                                $notes, $_SESSION['user_id']
+                            );
+                            
+                            if ($tx_stmt->execute()) {
+                                $transaction_id = $tx_stmt->insert_id;
+                                $tx_stmt->close();
+                                
+                                // Update invoice with cash transaction reference
+                                $update_invoice = $conn->prepare("
+                                    UPDATE invoice SET bank_account_id = ?, bank_transaction_id = ? 
+                                    WHERE id = ?
+                                ");
+                                $update_invoice->bind_param("iii", $cash_account['id'], $transaction_id, $invoice_id);
+                                $update_invoice->execute();
+                                $update_invoice->close();
+                                
+                                // Update cash account balance
+                                $update_balance = $conn->prepare("UPDATE bank_accounts SET current_balance = current_balance + ? WHERE id = ?");
+                                $update_balance->bind_param("di", $paid_amount, $cash_account['id']);
+                                $update_balance->execute();
+                                $update_balance->close();
+                            }
+                        }
+                    }
+                    
                     // Log activity
-                    $log_desc = "Payment collected of ₹" . number_format($paid_amount, 2) . " for invoice #" . $invoice['inv_num'] . " from customer: " . $customer['customer_name'];
+                    $log_desc = "Payment collected of ₹" . number_format($paid_amount, 2) . " for invoice #" . $invoice['inv_num'] . " from customer: " . $customer['customer_name'] . " via " . strtoupper($payment_method);
+                    if (in_array($payment_method, ['bank', 'upi', 'card', 'cheque']) && $bank_account_id) {
+                        $bank_query = $conn->prepare("SELECT account_name FROM bank_accounts WHERE id = ?");
+                        $bank_query->bind_param("i", $bank_account_id);
+                        $bank_query->execute();
+                        $bank_info = $bank_query->get_result()->fetch_assoc();
+                        if ($bank_info) {
+                            $log_desc .= " to " . $bank_info['account_name'];
+                        }
+                        $bank_query->close();
+                    }
                     $log_query = "INSERT INTO activity_log (user_id, action, description) VALUES (?, 'payment', ?)";
                     $log_stmt = $conn->prepare($log_query);
                     $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
@@ -157,7 +408,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $error = 'You do not have permission to collect payments.';
     } else {
         $payment_method = $_POST['payment_method'] ?? 'cash';
+        $bank_account_id = isset($_POST['bank_account_id']) && $_POST['bank_account_id'] !== '' ? intval($_POST['bank_account_id']) : null;
         $reference_no = trim($_POST['reference_no'] ?? '');
+        $cheque_number = trim($_POST['cheque_number'] ?? '');
+        $cheque_date = !empty($_POST['cheque_date']) ? $_POST['cheque_date'] : null;
+        $cheque_bank = trim($_POST['cheque_bank'] ?? '');
+        $upi_ref_no = trim($_POST['upi_ref_no'] ?? '');
+        $transaction_ref_no = trim($_POST['transaction_ref_no'] ?? '');
         $notes = trim($_POST['notes'] ?? '');
         
         // Start transaction
@@ -186,13 +443,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 
                 $total_collected += $opening_balance;
                 $collected_items[] = "Opening Balance: ₹" . number_format($opening_balance, 2);
-                
-                // Log opening balance payment
-                $log_desc = "Opening balance payment collected of ₹" . number_format($opening_balance, 2) . " from customer: " . $customer['customer_name'] . " via " . strtoupper($payment_method);
-                $log_query = "INSERT INTO activity_log (user_id, action, description) VALUES (?, 'payment', ?)";
-                $log_stmt = $conn->prepare($log_query);
-                $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
-                $log_stmt->execute();
             }
             
             // 2. Get all pending invoices for this customer
@@ -201,6 +451,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $pending_query->execute();
             $pending_result = $pending_query->get_result();
             
+            $invoice_ids = [];
             if ($pending_result->num_rows > 0) {
                 while ($invoice = $pending_result->fetch_assoc()) {
                     $new_paid = $invoice['total'];
@@ -213,17 +464,131 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     
                     $total_collected += $invoice['pending_amount'];
                     $collected_items[] = "Invoice #" . $invoice['inv_num'] . ": ₹" . number_format($invoice['pending_amount'], 2);
-                    
-                    // Log individual payment
-                    $log_desc = "Payment collected of ₹" . number_format($invoice['pending_amount'], 2) . " for invoice #" . $invoice['inv_num'] . " from customer: " . $customer['customer_name'];
-                    $log_query = "INSERT INTO activity_log (user_id, action, description) VALUES (?, 'payment', ?)";
-                    $log_stmt = $conn->prepare($log_query);
-                    $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
-                    $log_stmt->execute();
+                    $invoice_ids[] = $invoice['id'];
                 }
             }
             
             if ($total_collected > 0) {
+                // Create bank transaction for non-cash payments
+                if ($payment_method !== 'credit' && $total_collected > 0 && in_array($payment_method, ['bank', 'upi', 'card', 'cheque'])) {
+                    if (!$bank_account_id) {
+                        throw new Exception("Bank account is required for {$payment_method} payment.");
+                    }
+                    
+                    // Verify bank account exists and is active
+                    $bank_check = $conn->prepare("SELECT id, current_balance FROM bank_accounts WHERE id = ? AND status = 1");
+                    $bank_check->bind_param("i", $bank_account_id);
+                    $bank_check->execute();
+                    $bank_data = $bank_check->get_result()->fetch_assoc();
+                    
+                    if (!$bank_data) {
+                        throw new Exception("Selected bank account is not active or does not exist.");
+                    }
+                    $bank_check->close();
+                    
+                    // Insert bank transaction
+                    $transaction_date = date('Y-m-d');
+                    $party_name = $customer['customer_name'];
+                    $ref_number = "OVERALL-" . date('Ymd') . "-" . $customer_id;
+                    
+                    $description = "Overall payment received from {$customer['customer_name']} for " . 
+                                   (count($collected_items) > 0 ? implode(", ", array_slice($collected_items, 0, 3)) : "multiple invoices") .
+                                   (count($collected_items) > 3 ? " and " . (count($collected_items) - 3) . " more" : "");
+                    
+                    $tx_stmt = $conn->prepare("
+                        INSERT INTO bank_transactions 
+                        (bank_account_id, transaction_date, transaction_type, reference_type, reference_id, 
+                         reference_number, party_name, party_type, description, amount, payment_method, 
+                         status, cheque_number, cheque_date, cheque_bank, upi_ref_no, transaction_ref_no, 
+                         notes, created_by) 
+                        VALUES (?, ?, 'sale_credit', 'overall_payment', NULL, 
+                                ?, ?, 'customer', ?, ?, ?, 'completed', 
+                                ?, ?, ?, ?, ?, ?, ?)
+                    ");
+                    
+                    $tx_stmt->bind_param("issssdsssssssi", 
+                        $bank_account_id, $transaction_date, $ref_number, $party_name, 
+                        $description, $total_collected, $payment_method,
+                        $cheque_number, $cheque_date, $cheque_bank, $upi_ref_no, $transaction_ref_no,
+                        $notes, $_SESSION['user_id']
+                    );
+                    
+                    if (!$tx_stmt->execute()) {
+                        throw new Exception("Failed to create bank transaction: " . $conn->error);
+                    }
+                    $tx_stmt->close();
+                    
+                    // Update bank account balance
+                    $new_balance = $bank_data['current_balance'] + $total_collected;
+                    $update_balance = $conn->prepare("UPDATE bank_accounts SET current_balance = ? WHERE id = ?");
+                    $update_balance->bind_param("di", $new_balance, $bank_account_id);
+                    
+                    if (!$update_balance->execute()) {
+                        throw new Exception("Failed to update bank account balance.");
+                    }
+                    $update_balance->close();
+                } elseif ($payment_method === 'cash') {
+                    // For cash payments, try to find a cash account
+                    $cash_account_query = $conn->prepare("SELECT id FROM bank_accounts WHERE account_name LIKE '%CASH%' OR account_type LIKE '%cash%' LIMIT 1");
+                    $cash_account_query->execute();
+                    $cash_account = $cash_account_query->get_result()->fetch_assoc();
+                    $cash_account_query->close();
+                    
+                    if ($cash_account) {
+                        // Insert cash transaction
+                        $transaction_date = date('Y-m-d');
+                        $party_name = $customer['customer_name'];
+                        $ref_number = "OVERALL-CASH-" . date('Ymd') . "-" . $customer_id;
+                        
+                        $tx_stmt = $conn->prepare("
+                            INSERT INTO bank_transactions 
+                            (bank_account_id, transaction_date, transaction_type, reference_type, reference_id, 
+                             reference_number, party_name, party_type, description, amount, payment_method, 
+                             status, notes, created_by) 
+                            VALUES (?, ?, 'sale_credit', 'overall_payment', NULL, 
+                                    ?, ?, 'customer', ?, ?, 'cash', 'completed', ?, ?)
+                        ");
+                        
+                        $description = "Overall cash payment received from {$customer['customer_name']} for " . 
+                                      (count($collected_items) > 0 ? implode(", ", array_slice($collected_items, 0, 3)) : "multiple invoices");
+                        
+                        $tx_stmt->bind_param("issssdsi", 
+                            $cash_account['id'], $transaction_date, $ref_number, $party_name,
+                            $description, $total_collected, $notes, $_SESSION['user_id']
+                        );
+                        
+                        if ($tx_stmt->execute()) {
+                            $tx_stmt->close();
+                            
+                            // Update cash account balance
+                            $update_balance = $conn->prepare("UPDATE bank_accounts SET current_balance = current_balance + ? WHERE id = ?");
+                            $update_balance->bind_param("di", $total_collected, $cash_account['id']);
+                            $update_balance->execute();
+                            $update_balance->close();
+                        }
+                    }
+                }
+                
+                // Log activity for each collected item
+                foreach ($collected_items as $item) {
+                    $log_desc = "Payment collected of " . $item . " from customer: " . $customer['customer_name'] . " via " . strtoupper($payment_method);
+                    if (in_array($payment_method, ['bank', 'upi', 'card', 'cheque']) && $bank_account_id) {
+                        $bank_query = $conn->prepare("SELECT account_name FROM bank_accounts WHERE id = ?");
+                        $bank_query->bind_param("i", $bank_account_id);
+                        $bank_query->execute();
+                        $bank_info = $bank_query->get_result()->fetch_assoc();
+                        if ($bank_info) {
+                            $log_desc .= " to " . $bank_info['account_name'];
+                        }
+                        $bank_query->close();
+                    }
+                    $log_query = "INSERT INTO activity_log (user_id, action, description) VALUES (?, 'payment', ?)";
+                    $log_stmt = $conn->prepare($log_query);
+                    $log_stmt->bind_param("is", $_SESSION['user_id'], $log_desc);
+                    $log_stmt->execute();
+                    $log_stmt->close();
+                }
+                
                 $conn->commit();
                 $success = "Overall payment of ₹" . number_format($total_collected, 2) . " collected successfully.<br>";
                 $success .= "Collected items:<br>";
@@ -381,7 +746,6 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
     <?php include 'includes/head.php'; ?>
     <link rel="stylesheet" href="https://cdn.datatables.net/buttons/2.3.6/css/buttons.dataTables.min.css">
     <style>
-        /* Same styling as invoices.php */
         .invoice-avatar {
             width: 40px;
             height: 40px;
@@ -684,12 +1048,62 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
             margin-right: 8px;
         }
         
-        .opening-payment-table {
-            margin-top: 20px;
+        .bank-account-fields {
+            background: #f8fafc;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 10px;
+            display: none;
+            border: 1px solid #e2e8f0;
         }
         
-        .opening-payment-row {
-            background: #eef2ff;
+        .bank-account-fields.visible {
+            display: block;
+        }
+        
+        .field-group {
+            margin-bottom: 12px;
+        }
+        
+        .field-group label {
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 5px;
+            display: block;
+            color: #334155;
+        }
+        
+        .field-group input, .field-group select {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        
+        .field-group input:focus, .field-group select:focus {
+            border-color: #3b82f6;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(59,130,246,0.1);
+        }
+        
+        .reference-hint {
+            font-size: 11px;
+            color: #64748b;
+            margin-top: 5px;
+        }
+        
+        .modal-lg-custom {
+            max-width: 800px;
+        }
+        
+        hr {
+            margin: 15px 0;
+        }
+        
+        .text-danger {
+            color: #dc2626;
         }
     </style>
 </head>
@@ -893,7 +1307,7 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                 <div class="table-responsive">
                     <table class="table-custom" id="openingPaymentsTable">
                         <thead>
-                            32
+                            <tr>
                                 <th>Date & Time</th>
                                 <th>Amount</th>
                                 <th>Payment Method</th>
@@ -911,7 +1325,8 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                             <i class="bi bi-<?php 
                                                 echo $payment['payment_method'] == 'cash' ? 'cash' : 
                                                     ($payment['payment_method'] == 'card' ? 'credit-card' : 
-                                                    ($payment['payment_method'] == 'upi' ? 'phone' : 'bank')); 
+                                                    ($payment['payment_method'] == 'upi' ? 'phone' : 
+                                                    ($payment['payment_method'] == 'cheque' ? 'journal-check' : 'bank'))); 
                                             ?> me-1"></i>
                                             <?php echo ucfirst($payment['payment_method']); ?>
                                         </span>
@@ -942,7 +1357,7 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                 <div class="desktop-table" style="overflow-x: auto;">
                     <table class="table-custom" id="paymentHistoryTable">
                         <thead>
-                            32
+                            <tr>
                                 <th>#</th>
                                 <th>Invoice Details</th>
                                 <th>Items</th>
@@ -985,7 +1400,7 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                                     echo $invoice['payment_method'] == 'cash' ? 'cash' : 
                                                         ($invoice['payment_method'] == 'card' ? 'credit-card' : 
                                                         ($invoice['payment_method'] == 'upi' ? 'phone' : 
-                                                        ($invoice['payment_method'] == 'bank' ? 'bank' : 'journal-bookmark-fill'))); 
+                                                        ($invoice['payment_method'] == 'cheque' ? 'journal-check' : 'bank'))); 
                                                 ?>"></i>
                                                 <?php echo ucfirst($invoice['payment_method']); ?>
                                             </span>
@@ -1032,12 +1447,12 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                         <?php endif; ?>
                                     </tr>
 
-                                    <!-- Payment Collection Modal -->
+                                    <!-- Payment Collection Modal for Invoice -->
                                     <?php if ($invoice['pending_amount'] > 0): ?>
                                         <div class="modal fade" id="paymentModal<?php echo $invoice['id']; ?>" tabindex="-1" aria-hidden="true">
-                                            <div class="modal-dialog">
+                                            <div class="modal-dialog modal-lg-custom">
                                                 <div class="modal-content">
-                                                    <form method="POST" action="customer_payment_history.php?customer_id=<?php echo $customer_id; ?>">
+                                                    <form method="POST" action="customer_payment_history.php?customer_id=<?php echo $customer_id; ?>" id="paymentForm<?php echo $invoice['id']; ?>">
                                                         <input type="hidden" name="action" value="collect_payment">
                                                         <input type="hidden" name="invoice_id" value="<?php echo $invoice['id']; ?>">
                                                         
@@ -1070,7 +1485,7 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                                             
                                                             <div class="mb-3">
                                                                 <label class="form-label">Payment Method <span class="text-danger">*</span></label>
-                                                                <div class="payment-method-selector">
+                                                                <div class="payment-method-selector" id="paymentMethodSelector<?php echo $invoice['id']; ?>">
                                                                     <div class="payment-method-option">
                                                                         <input type="radio" name="payment_method" id="cash<?php echo $invoice['id']; ?>" value="cash" checked>
                                                                         <label for="cash<?php echo $invoice['id']; ?>">
@@ -1102,18 +1517,86 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                                                             <span>Bank</span>
                                                                         </label>
                                                                     </div>
+                                                                    
+                                                                    <div class="payment-method-option">
+                                                                        <input type="radio" name="payment_method" id="cheque<?php echo $invoice['id']; ?>" value="cheque">
+                                                                        <label for="cheque<?php echo $invoice['id']; ?>">
+                                                                            <i class="bi bi-journal-check"></i>
+                                                                            <span>Cheque</span>
+                                                                        </label>
+                                                                    </div>
                                                                 </div>
                                                             </div>
                                                             
-                                                            <div class="mb-3">
+                                                            <!-- Bank Account Fields -->
+                                                            <div class="bank-account-fields" id="bankFields<?php echo $invoice['id']; ?>">
+                                                                <div class="field-group">
+                                                                    <label>Select Bank Account <span class="text-danger">*</span></label>
+                                                                    <select name="bank_account_id" class="form-select">
+                                                                        <option value="">Select Bank Account</option>
+                                                                        <?php 
+                                                                        $bank_accounts->data_seek(0);
+                                                                        while ($bank = $bank_accounts->fetch_assoc()): 
+                                                                        ?>
+                                                                            <option value="<?php echo $bank['id']; ?>" <?php echo ($bank['is_default'] ?? false) ? 'selected' : ''; ?>>
+                                                                                <?php echo htmlspecialchars($bank['account_name'] . ' - ' . $bank['bank_name']); ?>
+                                                                                (Balance: <?php echo formatCurrency($bank['current_balance']); ?>)
+                                                                            </option>
+                                                                        <?php endwhile; ?>
+                                                                    </select>
+                                                                </div>
+                                                                
+                                                                <div class="field-group" id="referenceNoField<?php echo $invoice['id']; ?>">
+                                                                    <label>Reference Number / UPI ID / Transaction ID</label>
+                                                                    <input type="text" name="reference_no" class="form-control" placeholder="Enter reference number, UPI ID, or transaction ID">
+                                                                    <div class="reference-hint">
+                                                                        <i class="bi bi-info-circle"></i> For UPI: UPI ID or transaction reference<br>
+                                                                        For Bank Transfer: Transaction reference number<br>
+                                                                        For Card: Last 4 digits or transaction ID
+                                                                    </div>
+                                                                </div>
+                                                                
+                                                                <div class="field-group" id="chequeNumberField<?php echo $invoice['id']; ?>" style="display: none;">
+                                                                    <label>Cheque Number <span class="text-danger">*</span></label>
+                                                                    <input type="text" name="cheque_number" class="form-control" placeholder="Enter cheque number">
+                                                                </div>
+                                                                
+                                                                <div class="field-group" id="chequeDateField<?php echo $invoice['id']; ?>" style="display: none;">
+                                                                    <label>Cheque Date</label>
+                                                                    <input type="date" name="cheque_date" class="form-control" value="<?php echo date('Y-m-d'); ?>">
+                                                                </div>
+                                                                
+                                                                <div class="field-group" id="chequeBankField<?php echo $invoice['id']; ?>" style="display: none;">
+                                                                    <label>Cheque Bank</label>
+                                                                    <input type="text" name="cheque_bank" class="form-control" placeholder="Bank name on cheque">
+                                                                </div>
+                                                                
+                                                                <div class="field-group" id="upiRefField<?php echo $invoice['id']; ?>" style="display: none;">
+                                                                    <label>UPI Reference Number</label>
+                                                                    <input type="text" name="upi_ref_no" class="form-control" placeholder="Enter UPI transaction reference">
+                                                                </div>
+                                                                
+                                                                <div class="field-group" id="transactionRefField<?php echo $invoice['id']; ?>" style="display: none;">
+                                                                    <label>Transaction Reference Number</label>
+                                                                    <input type="text" name="transaction_ref_no" class="form-control" placeholder="Enter transaction reference number">
+                                                                </div>
+                                                            </div>
+                                                            
+                                                            <div class="mb-3 mt-3">
                                                                 <label class="form-label">Amount to Collect <span class="text-danger">*</span></label>
                                                                 <div class="input-group">
                                                                     <span class="input-group-text">₹</span>
                                                                     <input type="number" name="paid_amount" class="form-control" 
                                                                            step="0.01" min="0.01" max="<?php echo $invoice['pending_amount']; ?>" 
-                                                                           value="<?php echo $invoice['pending_amount']; ?>" required>
+                                                                           value="<?php echo $invoice['pending_amount']; ?>" required
+                                                                           onchange="validatePayment(this, <?php echo $invoice['pending_amount']; ?>)">
                                                                 </div>
                                                                 <small class="text-muted">Maximum: <?php echo formatCurrency($invoice['pending_amount']); ?></small>
+                                                            </div>
+                                                            
+                                                            <div class="mb-3">
+                                                                <label class="form-label">Notes (Optional)</label>
+                                                                <textarea name="notes" class="form-control" rows="2" placeholder="Add any additional notes about this payment"></textarea>
                                                             </div>
                                                         </div>
                                                         
@@ -1125,6 +1608,54 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                                 </div>
                                             </div>
                                         </div>
+                                        
+                                        <script>
+                                        document.addEventListener('DOMContentLoaded', function() {
+                                            const paymentMethodRadios = document.querySelectorAll('#paymentMethodSelector<?php echo $invoice['id']; ?> input[type="radio"]');
+                                            const bankFields = document.getElementById('bankFields<?php echo $invoice['id']; ?>');
+                                            
+                                            paymentMethodRadios.forEach(function(radio) {
+                                                radio.addEventListener('change', function() {
+                                                    const method = this.value;
+                                                    
+                                                    if (method === 'bank' || method === 'upi' || method === 'card' || method === 'cheque') {
+                                                        bankFields.classList.add('visible');
+                                                        
+                                                        // Show/hide specific fields based on method
+                                                        const chequeNumberField = document.getElementById('chequeNumberField<?php echo $invoice['id']; ?>');
+                                                        const chequeDateField = document.getElementById('chequeDateField<?php echo $invoice['id']; ?>');
+                                                        const chequeBankField = document.getElementById('chequeBankField<?php echo $invoice['id']; ?>');
+                                                        const upiRefField = document.getElementById('upiRefField<?php echo $invoice['id']; ?>');
+                                                        const transactionRefField = document.getElementById('transactionRefField<?php echo $invoice['id']; ?>');
+                                                        const referenceNoField = document.getElementById('referenceNoField<?php echo $invoice['id']; ?>');
+                                                        
+                                                        // Hide all method-specific fields first
+                                                        if (chequeNumberField) chequeNumberField.style.display = 'none';
+                                                        if (chequeDateField) chequeDateField.style.display = 'none';
+                                                        if (chequeBankField) chequeBankField.style.display = 'none';
+                                                        if (upiRefField) upiRefField.style.display = 'none';
+                                                        if (transactionRefField) transactionRefField.style.display = 'none';
+                                                        if (referenceNoField) referenceNoField.style.display = 'block';
+                                                        
+                                                        if (method === 'cheque') {
+                                                            if (chequeNumberField) chequeNumberField.style.display = 'block';
+                                                            if (chequeDateField) chequeDateField.style.display = 'block';
+                                                            if (chequeBankField) chequeBankField.style.display = 'block';
+                                                            if (referenceNoField) referenceNoField.style.display = 'none';
+                                                        } else if (method === 'upi') {
+                                                            if (upiRefField) upiRefField.style.display = 'block';
+                                                        } else if (method === 'bank') {
+                                                            if (transactionRefField) transactionRefField.style.display = 'block';
+                                                        } else if (method === 'card') {
+                                                            if (transactionRefField) transactionRefField.style.display = 'block';
+                                                        }
+                                                    } else {
+                                                        bankFields.classList.remove('visible');
+                                                    }
+                                                });
+                                            });
+                                        });
+                                        </script>
                                     <?php endif; ?>
                                 <?php endforeach; ?>
                             <?php else: ?>
@@ -1143,7 +1674,7 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
 <!-- Opening Balance Payment Modal -->
 <?php if ($opening_balance > 0 && $is_admin): ?>
     <div class="modal fade" id="openingBalanceModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog">
+        <div class="modal-dialog modal-lg-custom">
             <div class="modal-content">
                 <form method="POST" action="customer_payment_history.php?customer_id=<?php echo $customer_id; ?>">
                     <input type="hidden" name="action" value="collect_opening_balance">
@@ -1175,7 +1706,7 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                         
                         <div class="mb-3">
                             <label class="form-label">Payment Method <span class="text-danger">*</span></label>
-                            <div class="payment-method-selector">
+                            <div class="payment-method-selector" id="openingPaymentMethodSelector">
                                 <div class="payment-method-option">
                                     <input type="radio" name="payment_method" id="opening_cash" value="cash" checked>
                                     <label for="opening_cash">
@@ -1207,28 +1738,86 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                         <span>Bank</span>
                                     </label>
                                 </div>
+                                
+                                <div class="payment-method-option">
+                                    <input type="radio" name="payment_method" id="opening_cheque" value="cheque">
+                                    <label for="opening_cheque">
+                                        <i class="bi bi-journal-check"></i>
+                                        <span>Cheque</span>
+                                    </label>
+                                </div>
                             </div>
                         </div>
                         
-                        <div class="mb-3">
-                            <label class="form-label">Reference No. (Optional)</label>
-                            <input type="text" name="reference_no" class="form-control" placeholder="Cheque/Transaction/Reference number">
+                        <!-- Bank Account Fields for Opening Balance -->
+                        <div class="bank-account-fields" id="openingBankFields">
+                            <div class="field-group">
+                                <label>Select Bank Account <span class="text-danger">*</span></label>
+                                <select name="bank_account_id" class="form-select">
+                                    <option value="">Select Bank Account</option>
+                                    <?php 
+                                    $bank_accounts->data_seek(0);
+                                    while ($bank = $bank_accounts->fetch_assoc()): 
+                                    ?>
+                                        <option value="<?php echo $bank['id']; ?>" <?php echo ($bank['is_default'] ?? false) ? 'selected' : ''; ?>>
+                                            <?php echo htmlspecialchars($bank['account_name'] . ' - ' . $bank['bank_name']); ?>
+                                            (Balance: <?php echo formatCurrency($bank['current_balance']); ?>)
+                                        </option>
+                                    <?php endwhile; ?>
+                                </select>
+                            </div>
+                            
+                            <div class="field-group" id="openingReferenceNoField">
+                                <label>Reference Number / UPI ID / Transaction ID</label>
+                                <input type="text" name="reference_no" class="form-control" placeholder="Enter reference number, UPI ID, or transaction ID">
+                                <div class="reference-hint">
+                                    <i class="bi bi-info-circle"></i> For UPI: UPI ID or transaction reference<br>
+                                    For Bank Transfer: Transaction reference number<br>
+                                    For Card: Last 4 digits or transaction ID
+                                </div>
+                            </div>
+                            
+                            <div class="field-group" id="openingChequeNumberField" style="display: none;">
+                                <label>Cheque Number <span class="text-danger">*</span></label>
+                                <input type="text" name="cheque_number" class="form-control" placeholder="Enter cheque number">
+                            </div>
+                            
+                            <div class="field-group" id="openingChequeDateField" style="display: none;">
+                                <label>Cheque Date</label>
+                                <input type="date" name="cheque_date" class="form-control" value="<?php echo date('Y-m-d'); ?>">
+                            </div>
+                            
+                            <div class="field-group" id="openingChequeBankField" style="display: none;">
+                                <label>Cheque Bank</label>
+                                <input type="text" name="cheque_bank" class="form-control" placeholder="Bank name on cheque">
+                            </div>
+                            
+                            <div class="field-group" id="openingUpiRefField" style="display: none;">
+                                <label>UPI Reference Number</label>
+                                <input type="text" name="upi_ref_no" class="form-control" placeholder="Enter UPI transaction reference">
+                            </div>
+                            
+                            <div class="field-group" id="openingTransactionRefField" style="display: none;">
+                                <label>Transaction Reference Number</label>
+                                <input type="text" name="transaction_ref_no" class="form-control" placeholder="Enter transaction reference number">
+                            </div>
                         </div>
                         
-                        <div class="mb-3">
-                            <label class="form-label">Notes (Optional)</label>
-                            <textarea name="notes" class="form-control" rows="2" placeholder="Additional notes about this payment"></textarea>
-                        </div>
-                        
-                        <div class="mb-3">
+                        <div class="mb-3 mt-3">
                             <label class="form-label">Amount to Collect <span class="text-danger">*</span></label>
                             <div class="input-group">
                                 <span class="input-group-text">₹</span>
                                 <input type="number" name="paid_amount" class="form-control" 
                                        step="0.01" min="0.01" max="<?php echo $opening_balance; ?>" 
-                                       value="<?php echo $opening_balance; ?>" required>
+                                       value="<?php echo $opening_balance; ?>" required
+                                       onchange="validatePayment(this, <?php echo $opening_balance; ?>)">
                             </div>
                             <small class="text-muted">Maximum: <?php echo formatCurrency($opening_balance); ?></small>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Notes (Optional)</label>
+                            <textarea name="notes" class="form-control" rows="2" placeholder="Additional notes about this payment"></textarea>
                         </div>
                     </div>
                     
@@ -1243,12 +1832,58 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
             </div>
         </div>
     </div>
+    
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const openingRadios = document.querySelectorAll('#openingPaymentMethodSelector input[type="radio"]');
+        const openingBankFields = document.getElementById('openingBankFields');
+        
+        openingRadios.forEach(function(radio) {
+            radio.addEventListener('change', function() {
+                const method = this.value;
+                
+                if (method === 'bank' || method === 'upi' || method === 'card' || method === 'cheque') {
+                    openingBankFields.classList.add('visible');
+                    
+                    const chequeNumberField = document.getElementById('openingChequeNumberField');
+                    const chequeDateField = document.getElementById('openingChequeDateField');
+                    const chequeBankField = document.getElementById('openingChequeBankField');
+                    const upiRefField = document.getElementById('openingUpiRefField');
+                    const transactionRefField = document.getElementById('openingTransactionRefField');
+                    const referenceNoField = document.getElementById('openingReferenceNoField');
+                    
+                    if (chequeNumberField) chequeNumberField.style.display = 'none';
+                    if (chequeDateField) chequeDateField.style.display = 'none';
+                    if (chequeBankField) chequeBankField.style.display = 'none';
+                    if (upiRefField) upiRefField.style.display = 'none';
+                    if (transactionRefField) transactionRefField.style.display = 'none';
+                    if (referenceNoField) referenceNoField.style.display = 'block';
+                    
+                    if (method === 'cheque') {
+                        if (chequeNumberField) chequeNumberField.style.display = 'block';
+                        if (chequeDateField) chequeDateField.style.display = 'block';
+                        if (chequeBankField) chequeBankField.style.display = 'block';
+                        if (referenceNoField) referenceNoField.style.display = 'none';
+                    } else if (method === 'upi') {
+                        if (upiRefField) upiRefField.style.display = 'block';
+                    } else if (method === 'bank') {
+                        if (transactionRefField) transactionRefField.style.display = 'block';
+                    } else if (method === 'card') {
+                        if (transactionRefField) transactionRefField.style.display = 'block';
+                    }
+                } else {
+                    openingBankFields.classList.remove('visible');
+                }
+            });
+        });
+    });
+    </script>
 <?php endif; ?>
 
 <!-- Overall Payment Modal -->
 <?php if ($grand_total_pending > 0 && $is_admin): ?>
     <div class="modal fade" id="overallPaymentModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog">
+        <div class="modal-dialog modal-lg-custom">
             <div class="modal-content">
                 <form method="POST" action="customer_payment_history.php?customer_id=<?php echo $customer_id; ?>">
                     <input type="hidden" name="action" value="collect_overall_pending">
@@ -1299,7 +1934,7 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                         
                         <div class="mb-3">
                             <label class="form-label">Payment Method <span class="text-danger">*</span></label>
-                            <div class="payment-method-selector">
+                            <div class="payment-method-selector" id="overallPaymentMethodSelector">
                                 <div class="payment-method-option">
                                     <input type="radio" name="payment_method" id="overall_cash" value="cash" checked>
                                     <label for="overall_cash">
@@ -1331,15 +1966,72 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
                                         <span>Bank</span>
                                     </label>
                                 </div>
+                                
+                                <div class="payment-method-option">
+                                    <input type="radio" name="payment_method" id="overall_cheque" value="cheque">
+                                    <label for="overall_cheque">
+                                        <i class="bi bi-journal-check"></i>
+                                        <span>Cheque</span>
+                                    </label>
+                                </div>
                             </div>
                         </div>
                         
-                        <div class="mb-3">
-                            <label class="form-label">Reference No. (Optional)</label>
-                            <input type="text" name="reference_no" class="form-control" placeholder="Cheque/Transaction/Reference number">
+                        <!-- Bank Account Fields for Overall Payment -->
+                        <div class="bank-account-fields" id="overallBankFields">
+                            <div class="field-group">
+                                <label>Select Bank Account <span class="text-danger">*</span></label>
+                                <select name="bank_account_id" class="form-select">
+                                    <option value="">Select Bank Account</option>
+                                    <?php 
+                                    $bank_accounts->data_seek(0);
+                                    while ($bank = $bank_accounts->fetch_assoc()): 
+                                    ?>
+                                        <option value="<?php echo $bank['id']; ?>" <?php echo ($bank['is_default'] ?? false) ? 'selected' : ''; ?>>
+                                            <?php echo htmlspecialchars($bank['account_name'] . ' - ' . $bank['bank_name']); ?>
+                                            (Balance: <?php echo formatCurrency($bank['current_balance']); ?>)
+                                        </option>
+                                    <?php endwhile; ?>
+                                </select>
+                            </div>
+                            
+                            <div class="field-group" id="overallReferenceNoField">
+                                <label>Reference Number / UPI ID / Transaction ID</label>
+                                <input type="text" name="reference_no" class="form-control" placeholder="Enter reference number, UPI ID, or transaction ID">
+                                <div class="reference-hint">
+                                    <i class="bi bi-info-circle"></i> For UPI: UPI ID or transaction reference<br>
+                                    For Bank Transfer: Transaction reference number<br>
+                                    For Card: Last 4 digits or transaction ID
+                                </div>
+                            </div>
+                            
+                            <div class="field-group" id="overallChequeNumberField" style="display: none;">
+                                <label>Cheque Number <span class="text-danger">*</span></label>
+                                <input type="text" name="cheque_number" class="form-control" placeholder="Enter cheque number">
+                            </div>
+                            
+                            <div class="field-group" id="overallChequeDateField" style="display: none;">
+                                <label>Cheque Date</label>
+                                <input type="date" name="cheque_date" class="form-control" value="<?php echo date('Y-m-d'); ?>">
+                            </div>
+                            
+                            <div class="field-group" id="overallChequeBankField" style="display: none;">
+                                <label>Cheque Bank</label>
+                                <input type="text" name="cheque_bank" class="form-control" placeholder="Bank name on cheque">
+                            </div>
+                            
+                            <div class="field-group" id="overallUpiRefField" style="display: none;">
+                                <label>UPI Reference Number</label>
+                                <input type="text" name="upi_ref_no" class="form-control" placeholder="Enter UPI transaction reference">
+                            </div>
+                            
+                            <div class="field-group" id="overallTransactionRefField" style="display: none;">
+                                <label>Transaction Reference Number</label>
+                                <input type="text" name="transaction_ref_no" class="form-control" placeholder="Enter transaction reference number">
+                            </div>
                         </div>
                         
-                        <div class="mb-3">
+                        <div class="mb-3 mt-3">
                             <label class="form-label">Notes (Optional)</label>
                             <textarea name="notes" class="form-control" rows="2" placeholder="Additional notes about this payment"></textarea>
                         </div>
@@ -1356,6 +2048,52 @@ $is_admin = ($_SESSION['user_role'] === 'admin');
             </div>
         </div>
     </div>
+    
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const overallRadios = document.querySelectorAll('#overallPaymentMethodSelector input[type="radio"]');
+        const overallBankFields = document.getElementById('overallBankFields');
+        
+        overallRadios.forEach(function(radio) {
+            radio.addEventListener('change', function() {
+                const method = this.value;
+                
+                if (method === 'bank' || method === 'upi' || method === 'card' || method === 'cheque') {
+                    overallBankFields.classList.add('visible');
+                    
+                    const chequeNumberField = document.getElementById('overallChequeNumberField');
+                    const chequeDateField = document.getElementById('overallChequeDateField');
+                    const chequeBankField = document.getElementById('overallChequeBankField');
+                    const upiRefField = document.getElementById('overallUpiRefField');
+                    const transactionRefField = document.getElementById('overallTransactionRefField');
+                    const referenceNoField = document.getElementById('overallReferenceNoField');
+                    
+                    if (chequeNumberField) chequeNumberField.style.display = 'none';
+                    if (chequeDateField) chequeDateField.style.display = 'none';
+                    if (chequeBankField) chequeBankField.style.display = 'none';
+                    if (upiRefField) upiRefField.style.display = 'none';
+                    if (transactionRefField) transactionRefField.style.display = 'none';
+                    if (referenceNoField) referenceNoField.style.display = 'block';
+                    
+                    if (method === 'cheque') {
+                        if (chequeNumberField) chequeNumberField.style.display = 'block';
+                        if (chequeDateField) chequeDateField.style.display = 'block';
+                        if (chequeBankField) chequeBankField.style.display = 'block';
+                        if (referenceNoField) referenceNoField.style.display = 'none';
+                    } else if (method === 'upi') {
+                        if (upiRefField) upiRefField.style.display = 'block';
+                    } else if (method === 'bank') {
+                        if (transactionRefField) transactionRefField.style.display = 'block';
+                    } else if (method === 'card') {
+                        if (transactionRefField) transactionRefField.style.display = 'block';
+                    }
+                } else {
+                    overallBankFields.classList.remove('visible');
+                }
+            });
+        });
+    });
+    </script>
 <?php endif; ?>
 
 <?php include 'includes/scripts.php'; ?>
