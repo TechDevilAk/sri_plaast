@@ -149,6 +149,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $old_paid_amount = floatval($inv_data['cash_received']);
             $new_payment_amount = $paid_amount - $old_paid_amount;
 
+            // Get customer name (define it here so it's available for all payment method branches)
+            $customer_name = $inv_data['customer_name'];
+            if ($inv_data['customer_id']) {
+                $cust_query = $conn->prepare("SELECT customer_name FROM customers WHERE id = ?");
+                $cust_query->bind_param("i", $inv_data['customer_id']);
+                $cust_query->execute();
+                $cust_data = $cust_query->get_result()->fetch_assoc();
+                if ($cust_data) {
+                    $customer_name = $cust_data['customer_name'];
+                }
+                $cust_query->close();
+            }
+
             $conn->begin_transaction();
 
             try {
@@ -180,19 +193,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                         }
                         
                         $bank_check->close();
-
-                        // Get customer name
-                        $customer_name = $inv_data['customer_name'];
-                        if ($inv_data['customer_id']) {
-                            $cust_query = $conn->prepare("SELECT customer_name FROM customers WHERE id = ?");
-                            $cust_query->bind_param("i", $inv_data['customer_id']);
-                            $cust_query->execute();
-                            $cust_data = $cust_query->get_result()->fetch_assoc();
-                            if ($cust_data) {
-                                $customer_name = $cust_data['customer_name'];
-                            }
-                            $cust_query->close();
-                        }
 
                         // Insert bank transaction
                         $transaction_date = date('Y-m-d');
@@ -253,18 +253,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                         $cash_account_query->close();
                         
                         if ($cash_account) {
-                            // Get customer name
-                            $customer_name = $inv_data['customer_name'];
-                            if ($inv_data['customer_id']) {
-                                $cust_query = $conn->prepare("SELECT customer_name FROM customers WHERE id = ?");
-                                $cust_query->bind_param("i", $inv_data['customer_id']);
-                                $cust_query->execute();
-                                $cust_data = $cust_query->get_result()->fetch_assoc();
-                                if ($cust_data) {
-                                    $customer_name = $cust_data['customer_name'];
-                                }
-                                $cust_query->close();
-                            }
                             
                             // Insert cash transaction
                             $transaction_date = date('Y-m-d');
